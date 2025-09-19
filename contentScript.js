@@ -134,8 +134,55 @@ const selectCaptionTrack = () => {
 };
 
 const getCaptionTracks = () => {
+  const playerResponseTracks = getCaptionTracksFromPlayerResponse();
+  if (playerResponseTracks?.length) {
+    return playerResponseTracks;
+  }
+
+  const playerOptionTracks = getCaptionTracksFromPlayerOptions();
+  if (playerOptionTracks?.length) {
+    return playerOptionTracks;
+  }
+
+  return null;
+};
+
+const getCaptionTracksFromPlayerResponse = () => {
   const playerResponse = getPlayerResponse();
-  return playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || null;
+  if (!playerResponse?.captions) {
+    return null;
+  }
+
+  const tracklist =
+    playerResponse.captions.playerCaptionsTracklistRenderer?.captionTracks ||
+    playerResponse.captions.playerCaptionsRenderer?.captionTracks ||
+    null;
+
+  if (Array.isArray(tracklist) && tracklist.length > 0) {
+    return tracklist;
+  }
+
+  return null;
+};
+
+const getCaptionTracksFromPlayerOptions = () => {
+  const playerElement = document.querySelector('ytd-player');
+  const player = playerElement?.player_ || playerElement;
+
+  if (!player?.getOption) {
+    return null;
+  }
+
+  try {
+    const trackList = player.getOption('captions', 'tracklist');
+    if (Array.isArray(trackList) && trackList.length > 0) {
+      return trackList.filter((track) => track && track.baseUrl);
+    }
+  } catch (error) {
+    console.debug('Failed to read caption tracks from player options.', error);
+  }
+
+  return null;
 };
 
 const fetchTranscript = async () => {
@@ -221,21 +268,39 @@ const parseXmlTranscript = (xmlText) => {
 };
 
 const getPlayerResponse = () => {
+  const currentVideoId = getCurrentVideoId();
+  const candidates = [];
+
   if (window.ytInitialPlayerResponse) {
-    return window.ytInitialPlayerResponse;
+    candidates.push(window.ytInitialPlayerResponse);
   }
 
   const watchFlexy = document.querySelector('ytd-watch-flexy');
-  if (watchFlexy?.playerResponse) {
-    return watchFlexy.playerResponse;
+  if (watchFlexy) {
+    candidates.push(watchFlexy.playerResponse);
+    candidates.push(watchFlexy.__data?.playerResponse);
+    candidates.push(watchFlexy.data?.playerResponse);
   }
 
   const playerElement = document.querySelector('ytd-player');
   const player = playerElement?.player_ || playerElement;
 
+  const resolvePlayerResponse = (candidate) => {
+    if (!candidate) {
+      return null;
+    }
+
+    const videoId = candidate?.videoDetails?.videoId;
+    if (currentVideoId && videoId && videoId !== currentVideoId) {
+      return null;
+    }
+
+    return candidate;
+  };
+
   if (player?.getPlayerResponse) {
     try {
-      return player.getPlayerResponse();
+      candidates.push(player.getPlayerResponse());
     } catch (error) {
       console.warn('Failed to retrieve player response from player object.', error);
     }
@@ -243,21 +308,59 @@ const getPlayerResponse = () => {
 
   if (playerElement?.getPlayerResponse) {
     try {
-      return playerElement.getPlayerResponse();
+      candidates.push(playerElement.getPlayerResponse());
     } catch (error) {
       console.warn('Failed to retrieve player response from player element.', error);
     }
   }
 
+  if (player) {
+    candidates.push(player.playerResponse);
+  }
+
+  if (playerElement) {
+    candidates.push(playerElement.playerResponse);
+    candidates.push(playerElement.__data?.playerResponse);
+    candidates.push(playerElement.data?.playerResponse);
+  }
+
   if (typeof window.ytplayer !== 'undefined' && window.ytplayer?.config?.args?.player_response) {
     try {
-      return JSON.parse(window.ytplayer.config.args.player_response);
+      candidates.push(JSON.parse(window.ytplayer.config.args.player_response));
     } catch (error) {
       console.warn('Failed to parse player response from ytplayer config.', error);
     }
   }
 
+  for (const candidate of candidates) {
+    const resolved = resolvePlayerResponse(candidate);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
   return null;
+};
+
+const getCurrentVideoId = () => {
+  const urlVideoId = new URLSearchParams(window.location.search).get('v');
+  if (urlVideoId) {
+    return urlVideoId;
+  }
+
+  const playerElement = document.querySelector('ytd-player');
+  const player = playerElement?.player_ || playerElement;
+
+  if (player?.getVideoData) {
+    try {
+      const videoData = player.getVideoData();
+      return videoData?.video_id || videoData?.videoId || null;
+    } catch (error) {
+      console.debug('Failed to read video data from player.', error);
+    }
+  }
+
+  return playerElement?.__data?.playerResponse?.videoDetails?.videoId || null;
 };
 
 const observer = new MutationObserver(() => addButtonIfNeeded());
