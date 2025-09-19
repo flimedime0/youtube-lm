@@ -2,6 +2,10 @@ const BUTTON_ID = 'ytlm-summarize-btn';
 const BUTTON_LABEL_DEFAULT = 'Summarize with ChatGPT';
 const BUTTON_LABEL_LOADING = 'Fetching transcript…';
 const BUTTON_LABEL_OPENING = 'Opening ChatGPT…';
+const CAPTION_POLL_INTERVAL_MS = 400;
+const CAPTION_POLL_TIMEOUT_MS = 8000;
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const addButtonIfNeeded = () => {
   if (document.getElementById(BUTTON_ID)) {
@@ -20,7 +24,16 @@ const addButtonIfNeeded = () => {
   button.id = BUTTON_ID;
   button.type = 'button';
   button.textContent = BUTTON_LABEL_DEFAULT;
-  button.className = 'yt-spec-button-shape-next yt-spec-button-shape-next--tonal yt-spec-button-shape-next--size-m';
+
+  const referenceButton =
+    targetContainer.querySelector('button.yt-spec-button-shape-next') || targetContainer.querySelector('button');
+  if (referenceButton) {
+    button.className = referenceButton.className;
+  } else {
+    button.className = 'yt-spec-button-shape-next yt-spec-button-shape-next--outline yt-spec-button-shape-next--size-m';
+  }
+
+  button.setAttribute('aria-label', BUTTON_LABEL_DEFAULT);
   button.style.marginLeft = '8px';
   button.addEventListener('click', onButtonClick);
   targetContainer.appendChild(button);
@@ -96,21 +109,43 @@ const buildPrompt = ({ title, url, transcript }) => {
   ].join('\n');
 };
 
-const fetchTranscript = async () => {
-  const playerResponse = getPlayerResponse();
-  const captionTracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+const waitForCaptionTrack = async () => {
+  const deadline = Date.now() + CAPTION_POLL_TIMEOUT_MS;
 
+  while (Date.now() < deadline) {
+    const track = selectCaptionTrack();
+    if (track) {
+      return track;
+    }
+
+    await delay(CAPTION_POLL_INTERVAL_MS);
+  }
+
+  return null;
+};
+
+const selectCaptionTrack = () => {
+  const captionTracks = getCaptionTracks();
   if (!captionTracks || captionTracks.length === 0) {
     return null;
   }
 
-  let track = captionTracks.find((item) => !item.kind || item.kind !== 'asr');
+  return captionTracks.find((item) => !item.kind || item.kind !== 'asr') || captionTracks[0];
+};
+
+const getCaptionTracks = () => {
+  const playerResponse = getPlayerResponse();
+  return playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || null;
+};
+
+const fetchTranscript = async () => {
+  const track = await waitForCaptionTrack();
   if (!track) {
-    track = captionTracks[0];
+    return null;
   }
 
-  const transcriptUrl = track.baseUrl.includes('&fmt=') ? track.baseUrl : `${track.baseUrl}&fmt=json3`;
-  const response = await fetch(transcriptUrl);
+  const transcriptUrl = ensureJsonTranscriptFormat(track.baseUrl);
+  const response = await fetch(transcriptUrl, { credentials: 'same-origin' });
   if (!response.ok) {
     throw new Error(`Transcript request failed with status ${response.status}`);
   }
@@ -128,6 +163,24 @@ const fetchTranscript = async () => {
   }
 
   return parseXmlTranscript(body);
+};
+
+const ensureJsonTranscriptFormat = (baseUrl) => {
+  if (!baseUrl) {
+    return baseUrl;
+  }
+
+  try {
+    const url = new URL(baseUrl);
+    if (!url.searchParams.has('fmt')) {
+      url.searchParams.set('fmt', 'json3');
+    }
+    return url.toString();
+  } catch (error) {
+    console.debug('Falling back to string manipulation for transcript URL formatting.', error);
+  }
+
+  return baseUrl.includes('&fmt=') ? baseUrl : `${baseUrl}&fmt=json3`;
 };
 
 const parseJsonTranscript = (data) => {
