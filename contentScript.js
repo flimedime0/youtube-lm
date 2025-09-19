@@ -5,6 +5,7 @@ const BUTTON_LABEL_OPENING = 'Opening ChatGPT…';
 const CAPTION_POLL_INTERVAL_MS = 400;
 const CAPTION_POLL_TIMEOUT_MS = 12000;
 const INNERTUBE_PLAYER_ENDPOINT = 'https://www.youtube.com/youtubei/v1/player';
+const INNERTUBE_TRANSCRIPT_ENDPOINT = 'https://www.youtube.com/youtubei/v1/get_transcript';
 
 let cachedCaptionTracks = null;
 let cachedCaptionVideoId = null;
@@ -185,7 +186,7 @@ const getCaptionTracksFromPlayerResponse = () => {
     null;
 
   if (Array.isArray(tracklist) && tracklist.length > 0) {
-    return tracklist.filter((track) => track && track.baseUrl);
+    return sanitizeCaptionTracks(tracklist);
   }
 
   return null;
@@ -202,7 +203,7 @@ const getCaptionTracksFromPlayerOptions = () => {
   try {
     const trackList = player.getOption('captions', 'tracklist');
     if (Array.isArray(trackList) && trackList.length > 0) {
-      const sanitizedTracks = trackList.filter((track) => track && track.baseUrl);
+      const sanitizedTracks = sanitizeCaptionTracks(trackList);
       if (sanitizedTracks.length > 0) {
         cacheCaptionTracks(sanitizedTracks);
         return sanitizedTracks;
@@ -221,7 +222,19 @@ const fetchTranscript = async () => {
     return null;
   }
 
-  const transcriptUrl = ensureJsonTranscriptFormat(track.baseUrl);
+  if (track.baseUrl) {
+    return fetchTranscriptFromBaseUrl(track.baseUrl);
+  }
+
+  if (track.params) {
+    return fetchTranscriptFromParams(track.params);
+  }
+
+  return null;
+};
+
+const fetchTranscriptFromBaseUrl = async (baseUrl) => {
+  const transcriptUrl = ensureJsonTranscriptFormat(baseUrl);
   const response = await fetch(transcriptUrl, { credentials: 'same-origin' });
   if (!response.ok) {
     throw new Error(`Transcript request failed with status ${response.status}`);
@@ -240,6 +253,52 @@ const fetchTranscript = async () => {
   }
 
   return parseXmlTranscript(body);
+};
+
+const fetchTranscriptFromParams = async (params) => {
+  if (!params) {
+    return null;
+  }
+
+  const apiKey = getInnertubeValue('INNERTUBE_API_KEY');
+  if (!apiKey) {
+    return null;
+  }
+
+  const contextPayload = buildInnertubeContext();
+  if (!contextPayload) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${INNERTUBE_TRANSCRIPT_ENDPOINT}?key=${apiKey}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-YouTube-Client-Name': contextPayload.clientNameHeader,
+        'X-YouTube-Client-Version': contextPayload.clientVersion || ''
+      },
+      body: JSON.stringify({
+        context: contextPayload.context,
+        params
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`InnerTube transcript request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    const transcript = parseInnertubeTranscript(data);
+    if (transcript) {
+      return transcript;
+    }
+  } catch (error) {
+    console.debug('Failed to load transcript from InnerTube transcript endpoint.', error);
+  }
+
+  return null;
 };
 
 const ensureJsonTranscriptFormat = (baseUrl) => {
@@ -293,6 +352,61 @@ const parseXmlTranscript = (xmlText) => {
   const parts = textNodes
     .map((node) => node.textContent?.replace(/\s+/g, ' ').trim())
     .filter((value) => Boolean(value));
+
+  return parts.join(' ');
+};
+
+const parseInnertubeTranscript = (data) => {
+  const actions = Array.isArray(data?.actions) ? data.actions : [];
+  if (actions.length === 0) {
+    return null;
+  }
+
+  const parts = [];
+  const appendText = (value) => {
+    if (typeof value !== 'string') {
+      return;
+    }
+
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    if (cleaned) {
+      parts.push(cleaned);
+    }
+  };
+
+  for (const action of actions) {
+    const cueGroups =
+      action?.updateEngagementPanelAction?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups;
+    if (!Array.isArray(cueGroups)) {
+      continue;
+    }
+
+    for (const group of cueGroups) {
+      const cues = group?.transcriptCueGroupRenderer?.cues;
+      if (!Array.isArray(cues)) {
+        continue;
+      }
+
+      for (const cue of cues) {
+        const cueRenderer = cue?.transcriptCueRenderer;
+        if (!cueRenderer?.cue) {
+          continue;
+        }
+
+        const runs = cueRenderer.cue.runs;
+        if (Array.isArray(runs) && runs.length > 0) {
+          appendText(runs.map((run) => run?.text || '').join(''));
+          continue;
+        }
+
+        appendText(cueRenderer.cue.simpleText || cueRenderer.cue.text || '');
+      }
+    }
+  }
+
+  if (parts.length === 0) {
+    return null;
+  }
 
   return parts.join(' ');
 };
@@ -388,13 +502,21 @@ const cacheCaptionTracks = (tracks) => {
     return;
   }
 
-  const sanitizedTracks = tracks.filter((track) => track && track.baseUrl);
+  const sanitizedTracks = sanitizeCaptionTracks(tracks);
   if (sanitizedTracks.length === 0) {
     return;
   }
 
   cachedCaptionVideoId = videoId;
   cachedCaptionTracks = sanitizedTracks;
+};
+
+const sanitizeCaptionTracks = (tracks) => {
+  if (!Array.isArray(tracks)) {
+    return [];
+  }
+
+  return tracks.filter((track) => track && (track.baseUrl || track.params));
 };
 
 const getCachedCaptionTracks = () => {
@@ -485,7 +607,7 @@ const fetchCaptionTracksFromInnertube = async (videoId) => {
       null;
 
     if (Array.isArray(tracks)) {
-      return tracks.filter((track) => track && track.baseUrl);
+      return sanitizeCaptionTracks(tracks);
     }
   } catch (error) {
     console.debug('Failed to load caption tracks from InnerTube player endpoint.', error);
