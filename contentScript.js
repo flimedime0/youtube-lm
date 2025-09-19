@@ -3,7 +3,13 @@ const BUTTON_LABEL_DEFAULT = 'Summarize with ChatGPT';
 const BUTTON_LABEL_LOADING = 'Fetching transcript…';
 const BUTTON_LABEL_OPENING = 'Opening ChatGPT…';
 const CAPTION_POLL_INTERVAL_MS = 400;
-const CAPTION_POLL_TIMEOUT_MS = 8000;
+const CAPTION_POLL_TIMEOUT_MS = 12000;
+const INNERTUBE_PLAYER_ENDPOINT = 'https://www.youtube.com/youtubei/v1/player';
+
+let cachedCaptionTracks = null;
+let cachedCaptionVideoId = null;
+let pendingInnertubeCaptionPromise = null;
+let pendingInnertubeVideoId = null;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -111,11 +117,24 @@ const buildPrompt = ({ title, url, transcript }) => {
 
 const waitForCaptionTrack = async () => {
   const deadline = Date.now() + CAPTION_POLL_TIMEOUT_MS;
+  let attemptedInnertubeFetch = false;
 
   while (Date.now() < deadline) {
     const track = selectCaptionTrack();
     if (track) {
       return track;
+    }
+
+    if (!attemptedInnertubeFetch) {
+      attemptedInnertubeFetch = true;
+      try {
+        const fetchedTracks = await ensureCaptionTracksFromInnertube();
+        if (Array.isArray(fetchedTracks) && fetchedTracks.length > 0) {
+          continue;
+        }
+      } catch (error) {
+        console.debug('Failed to fetch caption tracks via InnerTube.', error);
+      }
     }
 
     await delay(CAPTION_POLL_INTERVAL_MS);
@@ -134,13 +153,20 @@ const selectCaptionTrack = () => {
 };
 
 const getCaptionTracks = () => {
+  const cachedTracks = getCachedCaptionTracks();
+  if (cachedTracks?.length) {
+    return cachedTracks;
+  }
+
   const playerResponseTracks = getCaptionTracksFromPlayerResponse();
   if (playerResponseTracks?.length) {
+    cacheCaptionTracks(playerResponseTracks);
     return playerResponseTracks;
   }
 
   const playerOptionTracks = getCaptionTracksFromPlayerOptions();
   if (playerOptionTracks?.length) {
+    cacheCaptionTracks(playerOptionTracks);
     return playerOptionTracks;
   }
 
@@ -159,7 +185,7 @@ const getCaptionTracksFromPlayerResponse = () => {
     null;
 
   if (Array.isArray(tracklist) && tracklist.length > 0) {
-    return tracklist;
+    return tracklist.filter((track) => track && track.baseUrl);
   }
 
   return null;
@@ -176,7 +202,11 @@ const getCaptionTracksFromPlayerOptions = () => {
   try {
     const trackList = player.getOption('captions', 'tracklist');
     if (Array.isArray(trackList) && trackList.length > 0) {
-      return trackList.filter((track) => track && track.baseUrl);
+      const sanitizedTracks = trackList.filter((track) => track && track.baseUrl);
+      if (sanitizedTracks.length > 0) {
+        cacheCaptionTracks(sanitizedTracks);
+        return sanitizedTracks;
+      }
     }
   } catch (error) {
     console.debug('Failed to read caption tracks from player options.', error);
@@ -335,8 +365,185 @@ const getPlayerResponse = () => {
   for (const candidate of candidates) {
     const resolved = resolvePlayerResponse(candidate);
     if (resolved) {
+      if (resolved?.captions?.playerCaptionsTracklistRenderer?.captionTracks) {
+        cacheCaptionTracks(resolved.captions.playerCaptionsTracklistRenderer.captionTracks);
+      }
+      if (resolved?.captions?.playerCaptionsRenderer?.captionTracks) {
+        cacheCaptionTracks(resolved.captions.playerCaptionsRenderer.captionTracks);
+      }
       return resolved;
     }
+  }
+
+  return null;
+};
+
+const cacheCaptionTracks = (tracks) => {
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    return;
+  }
+
+  const videoId = getCurrentVideoId();
+  if (!videoId) {
+    return;
+  }
+
+  const sanitizedTracks = tracks.filter((track) => track && track.baseUrl);
+  if (sanitizedTracks.length === 0) {
+    return;
+  }
+
+  cachedCaptionVideoId = videoId;
+  cachedCaptionTracks = sanitizedTracks;
+};
+
+const getCachedCaptionTracks = () => {
+  const videoId = getCurrentVideoId();
+  if (!videoId) {
+    return null;
+  }
+
+  if (cachedCaptionVideoId !== videoId) {
+    cachedCaptionVideoId = null;
+    cachedCaptionTracks = null;
+    return null;
+  }
+
+  return Array.isArray(cachedCaptionTracks) ? cachedCaptionTracks : null;
+};
+
+const ensureCaptionTracksFromInnertube = async () => {
+  const videoId = getCurrentVideoId();
+  if (!videoId) {
+    return null;
+  }
+
+  const cachedTracks = getCachedCaptionTracks();
+  if (cachedTracks?.length) {
+    return cachedTracks;
+  }
+
+  if (pendingInnertubeCaptionPromise && pendingInnertubeVideoId === videoId) {
+    return pendingInnertubeCaptionPromise;
+  }
+
+  pendingInnertubeVideoId = videoId;
+  pendingInnertubeCaptionPromise = fetchCaptionTracksFromInnertube(videoId)
+    .then((tracks) => {
+      if (Array.isArray(tracks) && tracks.length > 0) {
+        cacheCaptionTracks(tracks);
+        return tracks;
+      }
+      return null;
+    })
+    .catch((error) => {
+      console.debug('InnerTube caption track fetch failed.', error);
+      return null;
+    })
+    .finally(() => {
+      pendingInnertubeCaptionPromise = null;
+      pendingInnertubeVideoId = null;
+    });
+
+  return pendingInnertubeCaptionPromise;
+};
+
+const fetchCaptionTracksFromInnertube = async (videoId) => {
+  const apiKey = getInnertubeValue('INNERTUBE_API_KEY');
+  if (!apiKey) {
+    return null;
+  }
+
+  const contextPayload = buildInnertubeContext();
+  if (!contextPayload) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${INNERTUBE_PLAYER_ENDPOINT}?key=${apiKey}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-YouTube-Client-Name': contextPayload.clientNameHeader,
+        'X-YouTube-Client-Version': contextPayload.clientVersion || ''
+      },
+      body: JSON.stringify({
+        context: contextPayload.context,
+        videoId
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`InnerTube player request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    const tracks =
+      data?.captions?.playerCaptionsTracklistRenderer?.captionTracks ||
+      data?.captions?.playerCaptionsRenderer?.captionTracks ||
+      null;
+
+    if (Array.isArray(tracks)) {
+      return tracks.filter((track) => track && track.baseUrl);
+    }
+  } catch (error) {
+    console.debug('Failed to load caption tracks from InnerTube player endpoint.', error);
+  }
+
+  return null;
+};
+
+const buildInnertubeContext = () => {
+  const context = getInnertubeValue('INNERTUBE_CONTEXT');
+  const clientName = getInnertubeValue('INNERTUBE_CLIENT_NAME') || context?.client?.clientName || 'WEB';
+  const clientVersion = getInnertubeValue('INNERTUBE_CLIENT_VERSION') || context?.client?.clientVersion || '2.20210721.00.00';
+  const hl = getInnertubeValue('HL') || context?.client?.hl || 'en';
+  const gl = getInnertubeValue('GL') || context?.client?.gl || 'US';
+
+  const resolvedContext = {
+    ...(context || {}),
+    client: {
+      ...(context?.client || {}),
+      clientName,
+      clientVersion,
+      hl,
+      gl
+    }
+  };
+
+  return {
+    context: resolvedContext,
+    clientVersion,
+    clientNameHeader: mapClientNameToHeader(clientName)
+  };
+};
+
+const mapClientNameToHeader = (clientName) => {
+  const mapping = {
+    WEB: '1',
+    WEB_REMIX: '67',
+    WEB_CREATOR: '62'
+  };
+
+  return mapping[clientName] || '1';
+};
+
+const getInnertubeValue = (key) => {
+  try {
+    if (typeof window.ytcfg?.get === 'function') {
+      const value = window.ytcfg.get(key);
+      if (typeof value !== 'undefined') {
+        return value;
+      }
+    }
+  } catch (error) {
+    console.debug(`Failed to read ${key} from ytcfg.get`, error);
+  }
+
+  const data = window.ytcfg?.data_ || window.ytcfg?.data || null;
+  if (data && typeof data === 'object' && key in data) {
+    return data[key];
   }
 
   return null;
