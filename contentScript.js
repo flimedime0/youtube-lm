@@ -357,10 +357,29 @@ const parseXmlTranscript = (xmlText) => {
 };
 
 const parseInnertubeTranscript = (data) => {
-  const actions = Array.isArray(data?.actions) ? data.actions : [];
-  if (actions.length === 0) {
-    return null;
-  }
+  const roots = [];
+  const enqueue = (value) => {
+    if (!value) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        enqueue(item);
+      }
+      return;
+    }
+
+    if (typeof value === 'object') {
+      roots.push(value);
+    }
+  };
+
+  enqueue(data?.actions);
+  enqueue(data?.onResponseReceivedActions);
+  enqueue(data?.onResponseReceivedEndpoints);
+  enqueue(data?.commands);
+  enqueue(data);
 
   const parts = [];
   const appendText = (value) => {
@@ -374,34 +393,216 @@ const parseInnertubeTranscript = (data) => {
     }
   };
 
-  for (const action of actions) {
-    const cueGroups =
-      action?.updateEngagementPanelAction?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups;
-    if (!Array.isArray(cueGroups)) {
-      continue;
+  const seenCueRenderers = new WeakSet();
+  const seenSegmentRenderers = new WeakSet();
+  const visitedNodes = new WeakSet();
+
+  const collectRunsText = (runs) => {
+    if (!Array.isArray(runs) || runs.length === 0) {
+      return '';
     }
 
-    for (const group of cueGroups) {
-      const cues = group?.transcriptCueGroupRenderer?.cues;
-      if (!Array.isArray(cues)) {
+    return runs
+      .map((run) => {
+        if (!run) {
+          return '';
+        }
+
+        if (typeof run === 'string') {
+          return run;
+        }
+
+        if (typeof run.text === 'string') {
+          return run.text;
+        }
+
+        if (typeof run.simpleText === 'string') {
+          return run.simpleText;
+        }
+
+        return '';
+      })
+      .join('');
+  };
+
+  const processCueRenderer = (renderer) => {
+    if (!renderer || typeof renderer !== 'object') {
+      return;
+    }
+
+    if (seenCueRenderers.has(renderer)) {
+      return;
+    }
+    seenCueRenderers.add(renderer);
+
+    const cue = renderer.cue || renderer;
+    if (!cue || typeof cue !== 'object') {
+      return;
+    }
+
+    const seenTexts = new Set();
+    const registerText = (value) => {
+      if (typeof value !== 'string') {
+        return;
+      }
+
+      const cleaned = value.replace(/\s+/g, ' ').trim();
+      if (!cleaned || seenTexts.has(cleaned)) {
+        return;
+      }
+
+      seenTexts.add(cleaned);
+      parts.push(cleaned);
+    };
+
+    const runSources = [
+      cue.runs,
+      cue.simpleRuns,
+      cue.cue?.runs,
+      cue.cue?.simpleRuns
+    ];
+
+    for (const runs of runSources) {
+      const text = collectRunsText(runs);
+      if (text) {
+        registerText(text);
+      }
+    }
+
+    const textFields = [
+      cue.simpleText,
+      cue.displayString,
+      cue.text,
+      cue.cue?.simpleText,
+      cue.cue?.displayString,
+      cue.cue?.text,
+      cue.accessibilityData?.label,
+      cue.cue?.accessibilityData?.label
+    ];
+
+    for (const field of textFields) {
+      registerText(field);
+    }
+  };
+
+  const processSegmentRenderer = (renderer) => {
+    if (!renderer || typeof renderer !== 'object') {
+      return;
+    }
+
+    if (seenSegmentRenderers.has(renderer)) {
+      return;
+    }
+    seenSegmentRenderers.add(renderer);
+
+    const textSources = [
+      renderer.body?.text,
+      renderer.snippet,
+      renderer.title,
+      renderer.subtitle
+    ];
+
+    for (const source of textSources) {
+      if (!source || typeof source !== 'object') {
         continue;
       }
 
+      const runText = collectRunsText(source.runs);
+      if (runText) {
+        appendText(runText);
+      }
+
+      appendText(source.simpleText);
+      appendText(source.displayString);
+      appendText(source.text);
+    }
+  };
+
+  const processCueGroup = (group) => {
+    if (!group || typeof group !== 'object') {
+      return;
+    }
+
+    const cues = group.cues || group;
+    if (Array.isArray(cues)) {
       for (const cue of cues) {
-        const cueRenderer = cue?.transcriptCueRenderer;
-        if (!cueRenderer?.cue) {
-          continue;
+        if (cue?.transcriptCueRenderer) {
+          processCueRenderer(cue.transcriptCueRenderer);
+        } else {
+          processCueRenderer(cue);
         }
+      }
+      return;
+    }
 
-        const runs = cueRenderer.cue.runs;
-        if (Array.isArray(runs) && runs.length > 0) {
-          appendText(runs.map((run) => run?.text || '').join(''));
-          continue;
-        }
+    if (cues?.transcriptCueRenderer) {
+      processCueRenderer(cues.transcriptCueRenderer);
+    }
+  };
 
-        appendText(cueRenderer.cue.simpleText || cueRenderer.cue.text || '');
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    if (visitedNodes.has(node)) {
+      return;
+    }
+    visitedNodes.add(node);
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        visit(item);
+      }
+      return;
+    }
+
+    if (node.transcriptCueGroupRenderer) {
+      processCueGroup(node.transcriptCueGroupRenderer);
+    }
+
+    if (node.transcriptCueRenderer) {
+      processCueRenderer(node.transcriptCueRenderer);
+    }
+
+    if (node.transcriptSegmentRenderer) {
+      processSegmentRenderer(node.transcriptSegmentRenderer);
+    }
+
+    if (Array.isArray(node.cues)) {
+      processCueGroup({ cues: node.cues });
+    }
+
+    const candidateKeys = [
+      'body',
+      'content',
+      'contents',
+      'items',
+      'entries',
+      'cueGroups',
+      'continuationItems',
+      'header',
+      'footer',
+      'panel',
+      'sections',
+      'subMenuItems'
+    ];
+
+    for (const key of candidateKeys) {
+      if (node[key]) {
+        visit(node[key]);
       }
     }
+
+    for (const value of Object.values(node)) {
+      if (value && typeof value === 'object') {
+        visit(value);
+      }
+    }
+  };
+
+  for (const root of roots) {
+    visit(root);
   }
 
   if (parts.length === 0) {
