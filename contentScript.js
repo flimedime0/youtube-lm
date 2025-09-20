@@ -357,10 +357,31 @@ const parseXmlTranscript = (xmlText) => {
 };
 
 const parseInnertubeTranscript = (data) => {
-  const actions = Array.isArray(data?.actions) ? data.actions : [];
-  if (actions.length === 0) {
-    return null;
-  }
+  const roots = [];
+  const enqueue = (value) => {
+    if (!value) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        enqueue(item);
+      }
+      return;
+    }
+
+    if (typeof value === 'object') {
+      roots.push(value);
+    }
+  };
+
+  enqueue(data?.actions);
+  enqueue(data?.onResponseReceivedActions);
+  enqueue(data?.onResponseReceivedEndpoints);
+  enqueue(data?.onResponseReceivedCommands);
+  enqueue(data?.commands);
+  enqueue(data?.continuationContents);
+  enqueue(data);
 
   const parts = [];
   const appendText = (value) => {
@@ -374,34 +395,350 @@ const parseInnertubeTranscript = (data) => {
     }
   };
 
-  for (const action of actions) {
-    const cueGroups =
-      action?.updateEngagementPanelAction?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups;
-    if (!Array.isArray(cueGroups)) {
-      continue;
+  const collectRunsText = (runs) => {
+    if (!Array.isArray(runs) || runs.length === 0) {
+      return '';
     }
 
-    for (const group of cueGroups) {
-      const cues = group?.transcriptCueGroupRenderer?.cues;
-      if (!Array.isArray(cues)) {
+    return runs
+      .map((run) => {
+        if (!run) {
+          return '';
+        }
+
+        if (typeof run === 'string') {
+          return run;
+        }
+
+        if (typeof run.text === 'string') {
+          return run.text;
+        }
+
+        if (typeof run.simpleText === 'string') {
+          return run.simpleText;
+        }
+
+        return '';
+      })
+      .join('');
+  };
+
+  const seenCuePayloads = new WeakSet();
+  const seenCueRenderers = new WeakSet();
+  const seenSegmentRenderers = new WeakSet();
+  const visitedNodes = new WeakSet();
+
+  const processCueRenderer = (renderer) => {
+    if (!renderer || typeof renderer !== 'object') {
+      return;
+    }
+
+    if (seenCueRenderers.has(renderer)) {
+      return;
+    }
+    seenCueRenderers.add(renderer);
+
+    const cuePayload = renderer.cue || renderer;
+    if (!cuePayload || typeof cuePayload !== 'object') {
+      return;
+    }
+
+    if (seenCuePayloads.has(cuePayload)) {
+      return;
+    }
+    seenCuePayloads.add(cuePayload);
+
+    const seenTexts = new Set();
+    const registerText = (value) => {
+      if (typeof value !== 'string') {
+        return;
+      }
+
+      const cleaned = value.replace(/\s+/g, ' ').trim();
+      if (!cleaned || seenTexts.has(cleaned)) {
+        return;
+      }
+
+      seenTexts.add(cleaned);
+      parts.push(cleaned);
+    };
+
+    const runSources = [
+      cuePayload.runs,
+      cuePayload.simpleRuns,
+      renderer.runs,
+      renderer.simpleRuns
+    ];
+
+    for (const runs of runSources) {
+      const text = collectRunsText(runs);
+      if (text) {
+        registerText(text);
+      }
+    }
+
+    const textFields = [
+      cuePayload.simpleText,
+      cuePayload.displayString,
+      cuePayload.text,
+      renderer.simpleText,
+      renderer.displayString,
+      renderer.text,
+      cuePayload.accessibilityData?.label,
+      renderer.accessibilityData?.label
+    ];
+
+    for (const field of textFields) {
+      registerText(field);
+    }
+  };
+
+  const processSegmentRenderer = (renderer) => {
+    if (!renderer || typeof renderer !== 'object') {
+      return;
+    }
+
+    if (seenSegmentRenderers.has(renderer)) {
+      return;
+    }
+    seenSegmentRenderers.add(renderer);
+
+    const textSources = [
+      renderer.body?.text,
+      renderer.snippet,
+      renderer.title,
+      renderer.subtitle,
+      renderer.secondaryText
+    ];
+
+    for (const source of textSources) {
+      if (!source || typeof source !== 'object') {
         continue;
       }
 
-      for (const cue of cues) {
-        const cueRenderer = cue?.transcriptCueRenderer;
-        if (!cueRenderer?.cue) {
-          continue;
-        }
+      const runText = collectRunsText(source.runs);
+      if (runText) {
+        appendText(runText);
+      }
 
-        const runs = cueRenderer.cue.runs;
-        if (Array.isArray(runs) && runs.length > 0) {
-          appendText(runs.map((run) => run?.text || '').join(''));
-          continue;
-        }
+      appendText(source.simpleText);
+      appendText(source.displayString);
+      appendText(source.text);
+    }
+  };
 
-        appendText(cueRenderer.cue.simpleText || cueRenderer.cue.text || '');
+  const processCueCollection = (value) => {
+    if (!value) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        processCueCollection(item);
+      }
+      return;
+    }
+
+    if (typeof value !== 'object') {
+      return;
+    }
+
+    if (value.transcriptCueRenderer) {
+      processCueRenderer(value.transcriptCueRenderer);
+    }
+
+    if (value.cue && typeof value.cue === 'object') {
+      processCueRenderer(value.cue);
+    }
+
+    if (value.transcriptCueGroupRenderer) {
+      processCueCollection(value.transcriptCueGroupRenderer);
+    }
+
+    if (Array.isArray(value.cues)) {
+      for (const cue of value.cues) {
+        processCueCollection(cue);
       }
     }
+  };
+
+  const processTranscriptRenderer = (renderer) => {
+    if (!renderer || typeof renderer !== 'object') {
+      return;
+    }
+
+    const bodyCueGroups =
+      renderer.body?.transcriptBodyRenderer?.cueGroups || renderer.body?.cueGroups;
+    if (bodyCueGroups) {
+      processCueCollection(bodyCueGroups);
+    }
+
+    if (renderer.content) {
+      visit(renderer.content);
+    }
+
+    if (renderer.footer) {
+      visit(renderer.footer);
+    }
+
+    if (renderer.panels) {
+      visit(renderer.panels);
+    }
+  };
+
+  const processSearchPanel = (panel) => {
+    if (!panel || typeof panel !== 'object') {
+      return;
+    }
+
+    const bodyContents = panel.body?.transcriptSearchPanelBodyRenderer?.contents;
+    if (bodyContents) {
+      visit(bodyContents);
+    }
+
+    if (panel.contents) {
+      visit(panel.contents);
+    }
+
+    if (panel.sections) {
+      visit(panel.sections);
+    }
+
+    if (panel.footer) {
+      visit(panel.footer);
+    }
+
+    if (panel.header) {
+      visit(panel.header);
+    }
+  };
+
+  const processSectionRenderer = (section) => {
+    if (!section || typeof section !== 'object') {
+      return;
+    }
+
+    if (section.contents) {
+      visit(section.contents);
+    }
+
+    const bodyContents = section.body?.transcriptSectionBodyRenderer?.contents;
+    if (bodyContents) {
+      visit(bodyContents);
+    }
+
+    if (section.subMenuItems) {
+      visit(section.subMenuItems);
+    }
+  };
+
+  const visit = (node) => {
+    if (!node) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        visit(item);
+      }
+      return;
+    }
+
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    if (visitedNodes.has(node)) {
+      return;
+    }
+    visitedNodes.add(node);
+
+    if (node.transcriptCueGroupRenderer || node.cues) {
+      processCueCollection(node.transcriptCueGroupRenderer || node.cues);
+    }
+
+    if (node.transcriptCueRenderer) {
+      processCueRenderer(node.transcriptCueRenderer);
+    }
+
+    if (node.transcriptSegmentRenderer) {
+      processSegmentRenderer(node.transcriptSegmentRenderer);
+    }
+
+    if (node.transcriptRenderer) {
+      processTranscriptRenderer(node.transcriptRenderer);
+    }
+
+    if (node.transcriptSearchPanelRenderer) {
+      processSearchPanel(node.transcriptSearchPanelRenderer);
+    }
+
+    if (node.transcriptSectionRenderer) {
+      processSectionRenderer(node.transcriptSectionRenderer);
+    }
+
+    if (node.updateEngagementPanelAction?.content?.transcriptRenderer) {
+      processTranscriptRenderer(node.updateEngagementPanelAction.content.transcriptRenderer);
+      visit(node.updateEngagementPanelAction.content.transcriptRenderer);
+    }
+
+    if (node.appendContinuationItemsAction?.continuationItems) {
+      visit(node.appendContinuationItemsAction.continuationItems);
+    }
+
+    if (node.reloadContinuationItemsCommand?.continuationItems) {
+      visit(node.reloadContinuationItemsCommand.continuationItems);
+    }
+
+    if (node.replaceEnclosingAction?.item) {
+      visit(node.replaceEnclosingAction.item);
+    }
+
+    if (node.continuationContents) {
+      visit(node.continuationContents);
+    }
+
+    const nestedKeys = [
+      'body',
+      'content',
+      'contents',
+      'items',
+      'entries',
+      'header',
+      'footer',
+      'panel',
+      'panels',
+      'sections',
+      'subMenuItems',
+      'menuItems',
+      'options',
+      'results',
+      'tabs',
+      'command',
+      'commands',
+      'endpoint',
+      'endpoints'
+    ];
+
+    for (const key of nestedKeys) {
+      if (node[key]) {
+        visit(node[key]);
+      }
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (!value || typeof value !== 'object') {
+        continue;
+      }
+
+      if (key.toLowerCase().includes('transcript') || key.toLowerCase().includes('cue')) {
+        visit(value);
+      }
+    }
+  };
+
+  for (const root of roots) {
+    visit(root);
   }
 
   if (parts.length === 0) {
