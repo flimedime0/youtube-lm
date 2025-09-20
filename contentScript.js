@@ -357,7 +357,14 @@ const parseXmlTranscript = (xmlText) => {
 };
 
 const parseInnertubeTranscript = (data) => {
-  const actions = Array.isArray(data?.actions) ? data.actions : [];
+  const actions = [];
+  if (Array.isArray(data?.actions)) {
+    actions.push(...data.actions);
+  }
+  if (Array.isArray(data?.onResponseReceivedActions)) {
+    actions.push(...data.onResponseReceivedActions);
+  }
+
   if (actions.length === 0) {
     return null;
   }
@@ -374,32 +381,105 @@ const parseInnertubeTranscript = (data) => {
     }
   };
 
-  for (const action of actions) {
-    const cueGroups =
-      action?.updateEngagementPanelAction?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups;
-    if (!Array.isArray(cueGroups)) {
-      continue;
+  const processCues = (cues) => {
+    if (!Array.isArray(cues)) {
+      return;
     }
 
-    for (const group of cueGroups) {
-      const cues = group?.transcriptCueGroupRenderer?.cues;
-      if (!Array.isArray(cues)) {
+    for (const cue of cues) {
+      const cueRenderer = cue?.transcriptCueRenderer;
+      if (!cueRenderer?.cue) {
         continue;
       }
 
-      for (const cue of cues) {
-        const cueRenderer = cue?.transcriptCueRenderer;
-        if (!cueRenderer?.cue) {
-          continue;
-        }
+      const runs = cueRenderer.cue.runs;
+      if (Array.isArray(runs) && runs.length > 0) {
+        appendText(runs.map((run) => run?.text || '').join(''));
+        continue;
+      }
 
-        const runs = cueRenderer.cue.runs;
-        if (Array.isArray(runs) && runs.length > 0) {
-          appendText(runs.map((run) => run?.text || '').join(''));
-          continue;
-        }
+      appendText(cueRenderer.cue.simpleText || cueRenderer.cue.text || '');
+    }
+  };
 
-        appendText(cueRenderer.cue.simpleText || cueRenderer.cue.text || '');
+  const visitCueGroups = (node) => {
+    if (!node) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        visitCueGroups(item);
+      }
+      return;
+    }
+
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    if (node.transcriptCueGroupRenderer?.cues) {
+      processCues(node.transcriptCueGroupRenderer.cues);
+      return;
+    }
+
+    for (const value of Object.values(node)) {
+      visitCueGroups(value);
+    }
+  };
+
+  const seenRenderers = new WeakSet();
+  const collectTranscriptRenderers = (node, results) => {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        collectTranscriptRenderers(item, results);
+      }
+      return;
+    }
+
+    if (node.transcriptRenderer && typeof node.transcriptRenderer === 'object') {
+      if (!seenRenderers.has(node.transcriptRenderer)) {
+        results.push(node.transcriptRenderer);
+        seenRenderers.add(node.transcriptRenderer);
+      }
+      return;
+    }
+
+    for (const value of Object.values(node)) {
+      collectTranscriptRenderers(value, results);
+    }
+  };
+
+  for (const action of actions) {
+    const renderers = [];
+    collectTranscriptRenderers(action, renderers);
+
+    for (const renderer of renderers) {
+      if (!renderer || typeof renderer !== 'object') {
+        continue;
+      }
+
+      const candidateNodes = [];
+      const directCueGroups = renderer?.body?.transcriptBodyRenderer?.cueGroups;
+      if (Array.isArray(directCueGroups)) {
+        candidateNodes.push(directCueGroups);
+      }
+
+      const searchPanelRenderer = renderer?.content?.transcriptSearchPanelRenderer;
+      if (searchPanelRenderer) {
+        candidateNodes.push(searchPanelRenderer);
+      }
+
+      if (candidateNodes.length === 0) {
+        candidateNodes.push(renderer);
+      }
+
+      for (const node of candidateNodes) {
+        visitCueGroups(node);
       }
     }
   }
