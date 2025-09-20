@@ -789,11 +789,12 @@ const fetchWatchPageHtml = async (videoId) => {
 
     let html = await response.text();
 
-    if (html.includes('action="https://consent.youtube.com/s"')) {
-      const match = html.match(/name="v" value="(.*?)"/);
-      if (match?.[1]) {
+    const consentFormDetected = /<form[^>]*action="https:\/\/consent\.youtube\.com\/s(?:\?[^"]*)?"/i.test(html);
+    if (consentFormDetected) {
+      const consentValueMatch = html.match(/name="v" value="(.*?)"/);
+      if (consentValueMatch?.[1]) {
         try {
-          document.cookie = `CONSENT=YES+${match[1]}; Domain=.youtube.com; Path=/; Secure`;
+          document.cookie = `CONSENT=YES+${consentValueMatch[1]}; Domain=.youtube.com; Path=/; Secure`;
         } catch (cookieError) {
           console.debug('Failed to persist consent cookie for transcript fallback.', cookieError);
         }
