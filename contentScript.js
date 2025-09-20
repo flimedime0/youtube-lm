@@ -6,6 +6,13 @@ const CAPTION_POLL_INTERVAL_MS = 400;
 const CAPTION_POLL_TIMEOUT_MS = 12000;
 const INNERTUBE_PLAYER_ENDPOINT = 'https://www.youtube.com/youtubei/v1/player';
 const INNERTUBE_TRANSCRIPT_ENDPOINT = 'https://www.youtube.com/youtubei/v1/get_transcript';
+const WATCH_PAGE_BASE_URL = 'https://www.youtube.com/watch';
+const ANDROID_INNERTUBE_CONTEXT = {
+  client: {
+    clientName: 'ANDROID',
+    clientVersion: '20.10.38'
+  }
+};
 
 let cachedCaptionTracks = null;
 let cachedCaptionVideoId = null;
@@ -176,6 +183,16 @@ const getCaptionTracks = () => {
 
 const getCaptionTracksFromPlayerResponse = () => {
   const playerResponse = getPlayerResponse();
+  const tracklist = resolveCaptionTracksFromResponse(playerResponse);
+
+  if (tracklist) {
+    return sanitizeCaptionTracks(tracklist);
+  }
+
+  return null;
+};
+
+const resolveCaptionTracksFromResponse = (playerResponse) => {
   if (!playerResponse?.captions) {
     return null;
   }
@@ -186,7 +203,7 @@ const getCaptionTracksFromPlayerResponse = () => {
     null;
 
   if (Array.isArray(tracklist) && tracklist.length > 0) {
-    return sanitizeCaptionTracks(tracklist);
+    return tracklist;
   }
 
   return null;
@@ -651,6 +668,20 @@ const ensureCaptionTracksFromInnertube = async () => {
 };
 
 const fetchCaptionTracksFromInnertube = async (videoId) => {
+  const tracksFromPageConfig = await fetchCaptionTracksWithPageConfig(videoId);
+  if (Array.isArray(tracksFromPageConfig) && tracksFromPageConfig.length > 0) {
+    return sanitizeCaptionTracks(tracksFromPageConfig);
+  }
+
+  const fallbackTracks = await fetchCaptionTracksFromWatchPage(videoId);
+  if (Array.isArray(fallbackTracks) && fallbackTracks.length > 0) {
+    return fallbackTracks;
+  }
+
+  return null;
+};
+
+const fetchCaptionTracksWithPageConfig = async (videoId) => {
   const apiKey = getInnertubeValue('INNERTUBE_API_KEY');
   if (!apiKey) {
     return null;
@@ -681,19 +712,135 @@ const fetchCaptionTracksFromInnertube = async (videoId) => {
     }
 
     const data = await response.json();
-    const tracks =
+    return (
       data?.captions?.playerCaptionsTracklistRenderer?.captionTracks ||
       data?.captions?.playerCaptionsRenderer?.captionTracks ||
-      null;
-
-    if (Array.isArray(tracks)) {
-      return sanitizeCaptionTracks(tracks);
-    }
+      null
+    );
   } catch (error) {
     console.debug('Failed to load caption tracks from InnerTube player endpoint.', error);
   }
 
   return null;
+};
+
+const fetchCaptionTracksFromWatchPage = async (videoId) => {
+  if (!videoId) {
+    return null;
+  }
+
+  try {
+    const html = await fetchWatchPageHtml(videoId);
+    if (!html) {
+      return null;
+    }
+
+    const playerResponse = parsePlayerResponseFromWatchHtml(html);
+    const directTracks = resolveCaptionTracksFromResponse(playerResponse);
+    if (directTracks) {
+      return sanitizeCaptionTracks(directTracks);
+    }
+
+    const apiKey = extractInnertubeApiKeyFromHtml(html);
+    if (!apiKey) {
+      return null;
+    }
+
+    const response = await fetch(`${INNERTUBE_PLAYER_ENDPOINT}?key=${apiKey}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        context: ANDROID_INNERTUBE_CONTEXT,
+        videoId
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Watch page InnerTube request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    const tracks =
+      data?.captions?.playerCaptionsTracklistRenderer?.captionTracks ||
+      data?.captions?.playerCaptionsRenderer?.captionTracks ||
+      null;
+
+    if (Array.isArray(tracks) && tracks.length > 0) {
+      return sanitizeCaptionTracks(tracks);
+    }
+  } catch (error) {
+    console.debug('Failed to retrieve caption tracks via watch page fallback.', error);
+  }
+
+  return null;
+};
+
+const fetchWatchPageHtml = async (videoId) => {
+  const url = `${WATCH_PAGE_BASE_URL}?v=${encodeURIComponent(videoId)}`;
+
+  try {
+    let response = await fetch(url, { credentials: 'same-origin' });
+    if (!response.ok) {
+      throw new Error(`Watch page request failed with status ${response.status}`);
+    }
+
+    let html = await response.text();
+
+    if (html.includes('action="https://consent.youtube.com/s"')) {
+      const match = html.match(/name="v" value="(.*?)"/);
+      if (match?.[1]) {
+        try {
+          document.cookie = `CONSENT=YES+${match[1]}; Domain=.youtube.com; Path=/; Secure`;
+        } catch (cookieError) {
+          console.debug('Failed to persist consent cookie for transcript fallback.', cookieError);
+        }
+
+        response = await fetch(url, { credentials: 'same-origin' });
+        if (!response.ok) {
+          throw new Error(`Watch page request failed with status ${response.status}`);
+        }
+
+        html = await response.text();
+      }
+    }
+
+    return html;
+  } catch (error) {
+    console.debug('Failed to fetch watch page HTML for transcript fallback.', error);
+  }
+
+  return null;
+};
+
+const parsePlayerResponseFromWatchHtml = (html) => {
+  if (typeof html !== 'string' || html.length === 0) {
+    return null;
+  }
+
+  const match = html.match(/ytInitialPlayerResponse\s*=\s*(\{[\s\S]*?\})\s*;/);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(match[1]);
+  } catch (error) {
+    console.debug('Failed to parse player response JSON from watch HTML.', error);
+  }
+
+  return null;
+};
+
+const extractInnertubeApiKeyFromHtml = (html) => {
+  if (typeof html !== 'string' || html.length === 0) {
+    return null;
+  }
+
+  const match = html.match(/"INNERTUBE_API_KEY":"([a-zA-Z0-9_-]+)"/);
+  return match?.[1] || null;
 };
 
 const buildInnertubeContext = () => {
