@@ -13,7 +13,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'fetchTranscriptFromGlasp' && typeof message.videoUrl === 'string') {
     (async () => {
       try {
-        const transcript = await fetchTranscriptFromGlasp(message.videoUrl);
+        const transcript = await fetchTranscriptForVideo(message.videoUrl);
         sendResponse({ status: 'success', transcript });
       } catch (error) {
         console.error('Failed to fetch transcript from Glasp:', error);
@@ -44,6 +44,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+async function fetchTranscriptForVideo(videoUrl) {
+  if (typeof videoUrl !== 'string' || !videoUrl.trim()) {
+    throw new Error('Invalid video URL provided.');
+  }
+
+  try {
+    const youtubeTranscript = await fetchTranscriptFromYouTube(videoUrl);
+    if (typeof youtubeTranscript === 'string' && youtubeTranscript.trim()) {
+      return youtubeTranscript;
+    }
+  } catch (error) {
+    console.debug('Timed YouTube transcript fetch failed', error);
+  }
+
+  return fetchTranscriptFromGlasp(videoUrl);
+}
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   try {
@@ -129,6 +146,9 @@ async function fetchTranscriptFromGlasp(videoUrl) {
     const parsedTranscript = parseTranscriptFromReaderText(pageText);
     const transcript = await ensureTranscriptHasTimestamps(parsedTranscript, videoUrl);
     await cleanup();
+    if (!isTranscriptMeaningful(transcript)) {
+      throw new Error('Transcript data not found on Glasp for this video.');
+    }
     return transcript;
   } catch (error) {
     await cleanup();
@@ -299,6 +319,8 @@ const GLASP_MARKETING_LINES = [
   'Image Highlight',
   'Personality Test',
   'Quote Shots',
+  'Products Discover About',
+  'ProductsDiscoverAbout',
   'Company',
   'About us',
   'Blog',
@@ -320,6 +342,29 @@ const GLASP_STRONG_MARKETING_PATTERNS = [
   /^©\s*\d{4}\s+glasp/i,
   /\bglasp\s+inc\./i
 ];
+
+function isTranscriptMeaningful(transcript) {
+  if (typeof transcript !== 'string') {
+    return false;
+  }
+
+  const trimmed = transcript.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const collapsed = trimmed.replace(/\s+/g, '').toLowerCase();
+  if (collapsed.includes('productsdiscoverabout')) {
+    return false;
+  }
+
+  const hasStructure = /[\[\n]/.test(trimmed);
+  if (!hasStructure && trimmed.length < 64) {
+    return false;
+  }
+
+  return true;
+}
 
 function normalizeMarketingLine(line) {
   return line.trim().toLowerCase().replace(/[|:]+$/g, '').trim();

@@ -16,6 +16,20 @@ const BUTTON_LABELS = {
   openingChat: 'Opening ChatGPT…'
 };
 
+const SHORTS_BUTTON_LABELS = {
+  idle: 'Summarize',
+  loadingTranscript: 'Loading…',
+  openingChat: 'Opening…'
+};
+
+function getButtonLabelForState(state, context) {
+  const normalizedState = state && BUTTON_LABELS[state] ? state : 'idle';
+  if (context === 'shorts') {
+    return SHORTS_BUTTON_LABELS[normalizedState] || SHORTS_BUTTON_LABELS.idle;
+  }
+  return BUTTON_LABELS[normalizedState] || BUTTON_LABELS.idle;
+}
+
 const DEFAULT_SETTINGS = {
   preferredChatHost: 'chatgpt.com',
   overviewSentences: 3,
@@ -246,16 +260,18 @@ function findShortsActionsHost() {
 
 function ensureContextualActionButton({ id, container, context }) {
   let button = document.getElementById(id);
+  const existingState = button?.dataset?.ytlmState || 'idle';
+  const initialLabel = getButtonLabelForState(existingState, context);
+
   if (!button) {
     button = document.createElement('button');
     button.id = id;
     button.type = 'button';
     button.dataset.ytlmBusy = 'false';
-    button.dataset.ytlmState = 'idle';
+    button.dataset.ytlmState = existingState;
     button.dataset.ytlmContext = context;
     button.setAttribute('aria-haspopup', 'menu');
     button.setAttribute('aria-expanded', 'false');
-
     button.className = 'ytlm-action-button';
 
     const icon = document.createElement('span');
@@ -264,14 +280,14 @@ function ensureContextualActionButton({ id, container, context }) {
 
     const label = document.createElement('span');
     label.className = 'ytlm-button-label';
-    label.textContent = BUTTON_LABELS.idle;
+    label.textContent = initialLabel;
 
     const caret = document.createElement('span');
     caret.className = 'ytlm-button-caret';
     caret.setAttribute('aria-hidden', 'true');
 
     button.append(icon, label, caret);
-    button.setAttribute('aria-label', BUTTON_LABELS.idle);
+    button.setAttribute('aria-label', initialLabel);
     button.removeAttribute('title');
 
     container.appendChild(button);
@@ -291,7 +307,7 @@ function ensureContextualActionButton({ id, container, context }) {
   if (!button.querySelector('.ytlm-button-label')) {
     const label = document.createElement('span');
     label.className = 'ytlm-button-label';
-    label.textContent = BUTTON_LABELS.idle;
+    label.textContent = initialLabel;
     button.appendChild(label);
   }
 
@@ -302,6 +318,7 @@ function ensureContextualActionButton({ id, container, context }) {
     button.appendChild(caret);
   }
 
+  button.dataset.ytlmContext = context;
   button.classList.remove('ytlm-action-button--watch', 'ytlm-action-button--shorts');
   if (context === 'watch') {
     button.classList.add('ytlm-action-button--watch');
@@ -309,19 +326,13 @@ function ensureContextualActionButton({ id, container, context }) {
     button.classList.add('ytlm-action-button--shorts');
   }
 
-  if (!button.querySelector('.ytlm-button-icon')) {
-    const icon = document.createElement('span');
-    icon.className = 'ytlm-button-icon';
-    icon.setAttribute('aria-hidden', 'true');
-    button.prepend(icon);
+  const labelElement = button.querySelector('.ytlm-button-label');
+  if (labelElement) {
+    const currentState = button.dataset.ytlmState || 'idle';
+    labelElement.textContent = getButtonLabelForState(currentState, context);
   }
-
-  if (!button.querySelector('.ytlm-button-label')) {
-    const label = document.createElement('span');
-    label.className = 'ytlm-button-label';
-    label.textContent = BUTTON_LABELS.idle;
-    button.appendChild(label);
-  }
+  button.setAttribute('aria-label', getButtonLabelForState(button.dataset.ytlmState || 'idle', context));
+  button.removeAttribute('title');
 
   if (!button.dataset.ytlmMenuBound) {
     button.addEventListener('click', (event) => {
@@ -331,51 +342,56 @@ function ensureContextualActionButton({ id, container, context }) {
     button.dataset.ytlmMenuBound = 'true';
   }
 
-  if (!button.dataset.ytlmTooltipBound) {
-    const handlePointerEnter = (event) => {
-      const target = event.currentTarget;
-      if (target instanceof HTMLElement) {
-        scheduleTooltip(target);
-      }
-    };
-    const handlePointerLeave = (event) => {
-      const target = event.currentTarget;
-      if (target instanceof HTMLElement) {
-        cancelTooltip(target);
-      }
-    };
-    const handleFocus = (event) => {
-      const target = event.currentTarget;
-      if (target instanceof HTMLElement) {
-        scheduleTooltip(target);
-      }
-    };
-    const handleBlur = (event) => {
-      const target = event.currentTarget;
-      if (target instanceof HTMLElement) {
-        cancelTooltip(target);
-      }
-    };
-    const handlePointerDown = (event) => {
-      const target = event.currentTarget;
-      if (target instanceof HTMLElement) {
-        cancelTooltip(target);
-        hideTooltip(true);
-      }
-    };
+  if (context !== 'shorts') {
+    if (!button.dataset.ytlmTooltipBound) {
+      const handlePointerEnter = (event) => {
+        const target = event.currentTarget;
+        if (target instanceof HTMLElement) {
+          scheduleTooltip(target);
+        }
+      };
+      const handlePointerLeave = (event) => {
+        const target = event.currentTarget;
+        if (target instanceof HTMLElement) {
+          cancelTooltip(target);
+        }
+      };
+      const handleFocus = (event) => {
+        const target = event.currentTarget;
+        if (target instanceof HTMLElement) {
+          scheduleTooltip(target);
+        }
+      };
+      const handleBlur = (event) => {
+        const target = event.currentTarget;
+        if (target instanceof HTMLElement) {
+          cancelTooltip(target);
+        }
+      };
+      const handlePointerDown = (event) => {
+        const target = event.currentTarget;
+        if (target instanceof HTMLElement) {
+          cancelTooltip(target);
+          hideTooltip(true);
+        }
+      };
 
-    button.addEventListener('mouseenter', handlePointerEnter);
-    button.addEventListener('mouseleave', handlePointerLeave);
-    button.addEventListener('focus', handleFocus);
-    button.addEventListener('blur', handleBlur);
-    button.addEventListener('pointerdown', handlePointerDown);
-    button.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' || event.key === 'Esc') {
-        hideTooltip(true);
-      }
-    });
+      button.addEventListener('mouseenter', handlePointerEnter);
+      button.addEventListener('mouseleave', handlePointerLeave);
+      button.addEventListener('focus', handleFocus);
+      button.addEventListener('blur', handleBlur);
+      button.addEventListener('pointerdown', handlePointerDown);
+      button.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' || event.key === 'Esc') {
+          hideTooltip(true);
+        }
+      });
 
-    button.dataset.ytlmTooltipBound = 'true';
+      button.dataset.ytlmTooltipBound = 'true';
+    }
+  } else {
+    cancelTooltip(button);
+    button.removeAttribute('aria-describedby');
   }
 
   const menu = ensureActionMenu(button, context);
@@ -963,7 +979,8 @@ function setButtonState(button, state) {
   if (!button) {
     return;
   }
-  const label = BUTTON_LABELS[state] || BUTTON_LABELS.idle;
+  const context = button.dataset.ytlmContext || 'watch';
+  const label = getButtonLabelForState(state, context);
   const isIdle = state === 'idle';
   button.dataset.ytlmState = state;
   button.dataset.ytlmBusy = (!isIdle).toString();
@@ -1078,7 +1095,10 @@ function getVideoTitle() {
 }
 
 function buildPrompt({ title, url, transcript, settings }) {
-  const trimmedTranscript = transcript.trim();
+  const trimmedTranscript = sanitizeTranscriptForPrompt(transcript);
+  if (!trimmedTranscript) {
+    throw new Error('Transcript unavailable for this video.');
+  }
   const safeTitle = title?.trim() || 'Untitled video';
   const overviewCount = sanitizeNumber(settings.overviewSentences, DEFAULT_SETTINGS.overviewSentences, 1, 10);
   const includeTakeaways = Boolean(settings.includeTakeaways);
@@ -1114,6 +1134,20 @@ function buildPrompt({ title, url, transcript, settings }) {
   ].filter((section) => section && section.trim().length > 0);
 
   return promptSections.join('\n\n');
+}
+
+function sanitizeTranscriptForPrompt(transcript) {
+  if (typeof transcript !== 'string') {
+    return '';
+  }
+
+  let cleaned = transcript.trim();
+  if (!cleaned) {
+    return '';
+  }
+
+  cleaned = cleaned.replace(/^(?:Products\s*Discover\s*About\s*)+/i, '').trim();
+  return cleaned;
 }
 
 function buildPromptPreview(settings) {
@@ -1183,17 +1217,16 @@ function ensureGlobalStyles() {
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 48px;
-      height: 48px;
+      width: 60px;
+      min-height: 88px;
       flex: none;
-      margin: 4px 0 12px;
+      margin: 8px 0 20px;
     }
 
     .ytlm-shorts-button-slot {
       display: flex;
       justify-content: center;
       width: 100%;
-      margin-top: 12px;
     }
 
     .ytlm-action-button {
@@ -1311,58 +1344,71 @@ function ensureGlobalStyles() {
     }
 
     .ytlm-action-button--shorts {
-      width: 48px;
-      height: 48px;
-      border-radius: 50%;
-      border: 1px solid rgba(0, 0, 0, 0.08);
-      background: rgba(0, 0, 0, 0.06);
-      color: var(--yt-spec-text-primary, #0f0f0f);
-    }
-
-    .ytlm-action-button--shorts:hover:not(.ytlm-busy) {
-      background: rgba(0, 0, 0, 0.1);
-      border-color: rgba(0, 0, 0, 0.14);
-    }
-
-    .ytlm-action-button--shorts:active {
-      background: rgba(0, 0, 0, 0.14);
-      border-color: rgba(0, 0, 0, 0.2);
-    }
-
-    ytd-app[dark] .ytlm-action-button--shorts,
-    html[dark] .ytlm-action-button--shorts,
-    body[dark] .ytlm-action-button--shorts {
-      border-color: rgba(255, 255, 255, 0.16);
-      background: rgba(255, 255, 255, 0.12);
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 6px;
+      width: 56px;
+      padding: 0;
+      border: none;
+      background: none;
       color: var(--yt-spec-text-primary-inverse, #f1f1f1);
     }
 
-    ytd-app[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy),
-    html[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy),
-    body[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy) {
-      background: rgba(255, 255, 255, 0.18);
-      border-color: rgba(255, 255, 255, 0.18);
+    .ytlm-action-button--shorts:focus-visible {
+      outline: none;
     }
 
-    ytd-app[dark] .ytlm-action-button--shorts:active,
-    html[dark] .ytlm-action-button--shorts:active,
-    body[dark] .ytlm-action-button--shorts:active {
-      background: rgba(255, 255, 255, 0.24);
-      border-color: rgba(255, 255, 255, 0.24);
+    .ytlm-action-button--shorts .ytlm-button-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      white-space: normal;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.25;
+      max-width: 56px;
     }
 
-    .ytlm-action-button--shorts .ytlm-button-label,
     .ytlm-action-button--shorts .ytlm-button-caret {
       display: none;
     }
 
     .ytlm-action-button--shorts .ytlm-button-icon {
-      width: 24px;
-      height: 24px;
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background-color: rgba(0, 0, 0, 0.08);
       background-repeat: no-repeat;
       background-position: center;
       background-size: 24px 24px;
       background-image: url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%3E%3Cpath%20fill%3D%22%23FF0000%22%20d%3D%22M10.8%202.1%2016.6%205c1.4.7%201.9%202.4%201.2%203.8-.2.4-.5.7-.8.9l-1.8%201.1%201.8%201c1.4.7%201.9%202.4%201.2%203.8-.2.4-.5.7-.8.9l-5.8%203c-1.5.8-3.3.2-4.1-1.2-.4-.7-.5-1.5-.3-2.3l.1-.3-1.4-.7c-1.4-.7-1.9-2.4-1.2-3.8.2-.4.5-.7.8-.9l1.8-1.1-1.8-1c-1.4-.7-1.9-2.4-1.2-3.8.2-.4.5-.7.8-.9l5.8-3c.9-.5%202-.5%202.9%200Z%22/%3E%3Cpath%20fill%3D%22%23FFFFFF%22%20d%3D%22M10%208.75v6.5l5-3.25-5-3.25Z%22/%3E%3C/svg%3E');
+      transition: background-color 0.18s ease, transform 0.18s ease;
+    }
+
+    .ytlm-action-button--shorts:hover:not(.ytlm-busy) .ytlm-button-icon {
+      background-color: rgba(0, 0, 0, 0.14);
+      transform: translateY(-1px);
+    }
+
+    .ytlm-action-button--shorts:active .ytlm-button-icon {
+      background-color: rgba(0, 0, 0, 0.18);
+      transform: translateY(0);
+    }
+
+    .ytlm-action-button--shorts .ytlm-button-icon::after {
+      content: '';
+      position: absolute;
+      inset: 12px;
+      border-radius: 50%;
+      border: 3px solid rgba(0, 0, 0, 0.25);
+      border-top-color: rgba(0, 0, 0, 0.6);
+      opacity: 0;
     }
 
     .ytlm-action-button--shorts.ytlm-busy {
@@ -1371,18 +1417,35 @@ function ensureGlobalStyles() {
 
     .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon {
       background-image: none;
-      border-radius: 50%;
-      border: 3px solid rgba(0, 0, 0, 0.25);
-      border-top-color: rgba(0, 0, 0, 0.6);
-      width: 24px;
-      height: 24px;
+    }
+
+    .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon::after {
+      opacity: 1;
       animation: ytlm-spin 1s linear infinite;
     }
 
-    ytd-app[dark] .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon,
-    html[dark] .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon,
-    body[dark] .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon {
-      border-color: rgba(255, 255, 255, 0.35);
+    ytd-app[dark] .ytlm-action-button--shorts .ytlm-button-icon,
+    html[dark] .ytlm-action-button--shorts .ytlm-button-icon,
+    body[dark] .ytlm-action-button--shorts .ytlm-button-icon {
+      background-color: rgba(255, 255, 255, 0.24);
+    }
+
+    ytd-app[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy) .ytlm-button-icon,
+    html[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy) .ytlm-button-icon,
+    body[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy) .ytlm-button-icon {
+      background-color: rgba(255, 255, 255, 0.32);
+    }
+
+    ytd-app[dark] .ytlm-action-button--shorts:active .ytlm-button-icon,
+    html[dark] .ytlm-action-button--shorts:active .ytlm-button-icon,
+    body[dark] .ytlm-action-button--shorts:active .ytlm-button-icon {
+      background-color: rgba(255, 255, 255, 0.38);
+    }
+
+    ytd-app[dark] .ytlm-action-button--shorts .ytlm-button-icon::after,
+    html[dark] .ytlm-action-button--shorts .ytlm-button-icon::after,
+    body[dark] .ytlm-action-button--shorts .ytlm-button-icon::after {
+      border-color: rgba(255, 255, 255, 0.3);
       border-top-color: rgba(255, 255, 255, 0.9);
     }
 
