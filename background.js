@@ -191,12 +191,19 @@ async function attemptPromptInjection(tabId) {
       target: { tabId },
       world: 'MAIN',
       func: injectPromptAndSend,
-      args: [pending.prompt, pending.autoSend !== false]
+      args: [pending.prompt, pending.autoSend !== false, pending.hasInjected === true]
     });
 
     const status = result?.status || (result === true ? 'success' : 'retry');
 
-    if (status === 'success') {
+    if (result && typeof result.hasInjected === 'boolean' && result.hasInjected && !pending.hasInjected) {
+      pending.hasInjected = true;
+      if (status !== 'success' && status !== 'manual-complete') {
+        await persistPendingPrompts();
+      }
+    }
+
+    if (status === 'success' || status === 'manual-complete') {
       await removePendingPrompt(tabId);
       return;
     }
@@ -705,7 +712,8 @@ async function ensurePendingPromptsLoaded() {
               prompt: value.prompt,
               attempts: Number.isFinite(value.attempts) ? value.attempts : 0,
               host: typeof value.host === 'string' ? value.host : undefined,
-              autoSend: value.autoSend !== false
+              autoSend: value.autoSend !== false,
+              hasInjected: value.hasInjected === true
             });
           }
         }
@@ -735,7 +743,8 @@ async function persistPendingPrompts() {
       prompt: value.prompt,
       attempts: value.attempts ?? 0,
       host: value.host,
-      autoSend: value.autoSend !== false
+      autoSend: value.autoSend !== false,
+      hasInjected: value.hasInjected === true
     };
   }
 
@@ -744,7 +753,12 @@ async function persistPendingPrompts() {
 
 async function setPendingPrompt(tabId, data) {
   await ensurePendingPromptsLoaded();
-  pendingPrompts.set(tabId, { ...data, attempts: data.attempts ?? 0, autoSend: data.autoSend !== false });
+  pendingPrompts.set(tabId, {
+    ...data,
+    attempts: data.attempts ?? 0,
+    autoSend: data.autoSend !== false,
+    hasInjected: data.hasInjected === true
+  });
   await persistPendingPrompts();
 }
 
@@ -757,12 +771,13 @@ async function removePendingPrompt(tabId) {
   await persistPendingPrompts();
 }
 
-async function injectPromptAndSend(prompt, autoSend = true) {
+async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
     return { status: 'permanent-failure', reason: 'Invalid prompt provided.' };
   }
 
   const shouldAutoSend = autoSend !== false;
+  const normalizedPrompt = normalizeText(prompt);
 
   const preferredSelectors = [
     'textarea#prompt-textarea',
@@ -775,27 +790,46 @@ async function injectPromptAndSend(prompt, autoSend = true) {
 
   const composer = findEditor(preferredSelectors);
   if (!composer) {
-    return { status: 'retry', reason: 'Composer not found yet.' };
+    return { status: 'retry', reason: 'Composer not found yet.', hasInjected: hasInjected === true };
   }
 
-  if (!applyPromptToComposer(composer, prompt)) {
-    return { status: 'permanent-failure', reason: 'Unable to write prompt into composer.' };
+  const composerText = getComposerText(composer);
+  const normalizedComposer = normalizeText(composerText);
+  const promptAlreadyApplied = normalizedComposer === normalizedPrompt && normalizedPrompt.length > 0;
+
+  if (hasInjected && !promptAlreadyApplied) {
+    const lastTurnMatches = lastUserMessageMatchesPrompt(normalizedPrompt);
+    const reason = !normalizedComposer
+      ? 'Composer cleared after injection.'
+      : lastTurnMatches
+        ? 'Prompt already present in conversation.'
+        : 'Composer content changed after injection.';
+    return { status: 'manual-complete', reason, hasInjected: true, mode: 'manual' };
+  }
+
+  let didInject = hasInjected === true || promptAlreadyApplied;
+
+  if (!promptAlreadyApplied) {
+    if (!applyPromptToComposer(composer, prompt)) {
+      return { status: 'permanent-failure', reason: 'Unable to write prompt into composer.', hasInjected: hasInjected === true };
+    }
+    didInject = true;
   }
 
   if (!shouldAutoSend) {
     focusComposer(composer);
     placeCaretAtEnd(composer);
-    return { status: 'success', mode: 'manual' };
+    return { status: 'success', mode: 'manual', hasInjected: didInject };
   }
 
   const sendSucceeded = await attemptAutoSend(composer, 5, 200);
   if (sendSucceeded) {
-    return { status: 'success' };
+    return { status: 'success', hasInjected: didInject };
   }
 
   focusComposer(composer);
   placeCaretAtEnd(composer);
-  return { status: 'retry', reason: 'Send button not ready.' };
+  return { status: 'retry', reason: 'Send button not ready.', hasInjected: didInject };
 
   function findEditor(selectors) {
     for (const selector of selectors) {
@@ -900,6 +934,19 @@ async function injectPromptAndSend(prompt, autoSend = true) {
     }
     const style = window.getComputedStyle(element);
     return style.visibility !== 'hidden' && style.display !== 'none';
+  }
+
+  function getComposerText(element) {
+    if (!element) {
+      return '';
+    }
+    if ('value' in element && typeof element.value === 'string') {
+      return element.value;
+    }
+    if (isContentEditableElement(element)) {
+      return element.innerText || element.textContent || '';
+    }
+    return '';
   }
 
   function getElementScore(element) {
@@ -1232,5 +1279,51 @@ async function injectPromptAndSend(prompt, autoSend = true) {
 
   function wait(ms) {
     return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
+  }
+
+  function normalizeText(value) {
+    if (typeof value !== 'string') {
+      return '';
+    }
+    return value.replace(/\s+/g, ' ').trim();
+  }
+
+  function lastUserMessageMatchesPrompt(normalizedTarget) {
+    if (!normalizedTarget) {
+      return false;
+    }
+
+    const selectors = [
+      '[data-message-author-role="user"]',
+      '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
+      '[data-testid^="conversation-turn-"] [data-message-author-role="user"]',
+      'article[data-testid^="conversation-turn-"][data-role="user"]'
+    ];
+
+    const collected = [];
+    const seen = new Set();
+    for (const selector of selectors) {
+      const matches = document.querySelectorAll(selector);
+      for (const node of matches) {
+        if (!(node instanceof HTMLElement) || seen.has(node)) {
+          continue;
+        }
+        seen.add(node);
+        collected.push(node);
+      }
+    }
+
+    for (let index = collected.length - 1; index >= 0; index -= 1) {
+      const node = collected[index];
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      const text = node.innerText || node.textContent || '';
+      const normalizedText = normalizeText(text);
+      if (normalizedText) {
+        return normalizedText === normalizedTarget;
+      }
+    }
+    return false;
   }
 }
