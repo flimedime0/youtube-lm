@@ -288,6 +288,10 @@ function decodeHtmlEntities(text) {
 
   let decoded = text;
 
+  decoded = decoded.replace(/&amp;/gi, '&');
+  decoded = decoded.replace(/&lt;/gi, '<');
+  decoded = decoded.replace(/&gt;/gi, '>');
+
   const whitespaceEntityPatterns = [
     /&nbsp;/gi,
     /&#160;/gi,
@@ -309,17 +313,20 @@ function decodeHtmlEntities(text) {
     decoded = decoded.replace(pattern, ' ');
   }
 
-  decoded = decoded.replace(/&amp;/gi, '&');
-  decoded = decoded.replace(/&lt;/gi, '<');
-  decoded = decoded.replace(/&gt;/gi, '>');
-
   return decoded;
 }
 
 (() => {
-  const sampleHtml = '<div>Please&nbsp;Sign&nbsp;In</div>';
-  if (!detectGlaspSignInPrompt(sampleHtml)) {
-    console.warn('Sign-in detection failed for HTML entity sample.');
+  const samples = [
+    '<div>Please&nbsp;Sign&nbsp;In</div>',
+    '<div>Please&amp;nbsp;Sign&amp;nbsp;In</div>'
+  ];
+
+  for (const sample of samples) {
+    if (!detectGlaspSignInPrompt(sample)) {
+      console.warn('Sign-in detection failed for HTML entity sample:', sample);
+      break;
+    }
   }
 })();
 
