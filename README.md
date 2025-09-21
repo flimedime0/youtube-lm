@@ -8,6 +8,8 @@ This Chrome extension adds a "Summarize with ChatGPT" button to YouTube video pa
 - Retrieves the video transcript from [Glasp](https://glasp.co/).
 - Opens ChatGPT in a new tab and pastes a structured prompt for summarization.
 - Retries the prompt injection if the ChatGPT interface is not immediately ready.
+- Provides a settings panel to customize and preview the full prompt, choose the ChatGPT domain, and toggle automatic sending.
+- Cleans up Glasp transcripts and falls back to YouTube's timed-text API to keep timestamped transcript entries.
 
 ## Installation
 

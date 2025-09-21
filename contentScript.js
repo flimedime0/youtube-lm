@@ -22,7 +22,8 @@ const DEFAULT_SETTINGS = {
   includeTakeaways: true,
   includeActionSteps: true,
   responseLanguage: 'English',
-  customInstructions: ''
+  customInstructions: '',
+  autoSendPrompt: true
 };
 
 let currentSettings = { ...DEFAULT_SETTINGS };
@@ -954,7 +955,7 @@ async function handleSummarize(button) {
     });
 
     setButtonState(button, 'openingChat');
-    await openChatGPT(prompt, settings.preferredChatHost);
+    await openChatGPT(prompt, settings.preferredChatHost, settings.autoSendPrompt !== false);
   } catch (error) {
     console.error('Summarization failed', error);
     const message = error instanceof Error ? error.message : 'An unexpected error occurred.';
@@ -1122,6 +1123,16 @@ function buildPrompt({ title, url, transcript, settings }) {
   return promptSections.join('\n\n');
 }
 
+function buildPromptPreview(settings) {
+  const previewTranscript = ['[00:00] {{transcript_line_1}}', '[00:45] {{transcript_line_2}}', '[01:30] {{transcript_line_3}}'].join('\n');
+  return buildPrompt({
+    title: '{{video_title}}',
+    url: 'https://www.youtube.com/watch?v={{video_id}}',
+    transcript: previewTranscript,
+    settings
+  });
+}
+
 async function fetchTranscript(videoUrl) {
   if (!chrome?.runtime?.sendMessage) {
     throw new Error('chrome.runtime.sendMessage is unavailable.');
@@ -1145,13 +1156,13 @@ async function fetchTranscript(videoUrl) {
   });
 }
 
-async function openChatGPT(prompt, preferredHost) {
+async function openChatGPT(prompt, preferredHost, autoSend) {
   if (!chrome?.runtime?.sendMessage) {
     throw new Error('chrome.runtime.sendMessage is unavailable.');
   }
 
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'openChatGPT', prompt, preferredHost }, (response) => {
+    chrome.runtime.sendMessage({ type: 'openChatGPT', prompt, preferredHost, autoSend }, (response) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message || 'Unexpected extension error.'));
         return;
@@ -1532,6 +1543,53 @@ function ensureGlobalStyles() {
       resize: vertical;
     }
 
+    #${SETTINGS_PANEL_ID} .ytlm-preview-container {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    #${SETTINGS_PANEL_ID} .ytlm-preview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    #${SETTINGS_PANEL_ID} .ytlm-inline-button {
+      background: transparent;
+      color: inherit;
+      border: 1px solid var(--yt-spec-outline, rgba(0, 0, 0, 0.2));
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    #${SETTINGS_PANEL_ID} .ytlm-inline-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    #${SETTINGS_PANEL_ID} .ytlm-inline-button:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+
+    #${SETTINGS_PANEL_ID} .ytlm-prompt-preview {
+      font-family: 'Roboto Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+      font-size: 12px;
+      min-height: 150px;
+      white-space: pre;
+    }
+
+    #${SETTINGS_PANEL_ID} .ytlm-preview-note {
+      margin: 0;
+      font-size: 12px;
+      color: var(--yt-spec-text-secondary, #606060);
+    }
+
     #${SETTINGS_PANEL_ID} .ytlm-checkbox {
       flex-direction: row;
       align-items: center;
@@ -1683,6 +1741,7 @@ function sanitizeSettings(raw) {
   settings.includeActionSteps = sanitizeBoolean(raw.includeActionSteps, DEFAULT_SETTINGS.includeActionSteps);
   settings.responseLanguage = sanitizeString(raw.responseLanguage, DEFAULT_SETTINGS.responseLanguage);
   settings.customInstructions = sanitizeMultilineString(raw.customInstructions, DEFAULT_SETTINGS.customInstructions);
+  settings.autoSendPrompt = sanitizeBoolean(raw.autoSendPrompt, DEFAULT_SETTINGS.autoSendPrompt);
 
   return settings;
 }
@@ -1809,6 +1868,15 @@ function ensureSettingsPanel() {
   actionText.textContent = 'Include actionable steps';
   actionLabel.append(actionCheckbox, actionText);
 
+  const autoSendLabel = document.createElement('label');
+  autoSendLabel.className = 'ytlm-checkbox';
+  const autoSendCheckbox = document.createElement('input');
+  autoSendCheckbox.type = 'checkbox';
+  autoSendCheckbox.name = 'autoSendPrompt';
+  const autoSendText = document.createElement('span');
+  autoSendText.textContent = 'Send prompt to ChatGPT automatically';
+  autoSendLabel.append(autoSendCheckbox, autoSendText);
+
   const languageLabel = document.createElement('label');
   languageLabel.textContent = 'Preferred response language';
   const languageInput = document.createElement('input');
@@ -1821,6 +1889,27 @@ function ensureSettingsPanel() {
   const instructionsTextarea = document.createElement('textarea');
   instructionsTextarea.name = 'customInstructions';
   instructionsLabel.appendChild(instructionsTextarea);
+
+  const previewContainer = document.createElement('div');
+  previewContainer.className = 'ytlm-preview-container';
+  const previewHeader = document.createElement('div');
+  previewHeader.className = 'ytlm-preview-header';
+  const previewTitle = document.createElement('span');
+  previewTitle.textContent = 'Prompt preview';
+  const previewCopyButton = document.createElement('button');
+  previewCopyButton.type = 'button';
+  previewCopyButton.className = 'ytlm-inline-button';
+  previewCopyButton.textContent = 'Copy';
+  previewHeader.append(previewTitle, previewCopyButton);
+  const previewTextarea = document.createElement('textarea');
+  previewTextarea.className = 'ytlm-prompt-preview';
+  previewTextarea.setAttribute('readonly', 'readonly');
+  previewTextarea.setAttribute('spellcheck', 'false');
+  previewTextarea.rows = 10;
+  const previewNote = document.createElement('p');
+  previewNote.className = 'ytlm-preview-note';
+  previewNote.textContent = 'Placeholders such as {{video_title}} and {{transcript_line_1}} will be replaced with real video details when the prompt is sent.';
+  previewContainer.append(previewHeader, previewTextarea, previewNote);
 
   const actionsRow = document.createElement('div');
   actionsRow.className = 'ytlm-settings-actions';
@@ -1845,8 +1934,10 @@ function ensureSettingsPanel() {
     overviewLabel,
     takeawaysLabel,
     actionLabel,
+    autoSendLabel,
     languageLabel,
     instructionsLabel,
+    previewContainer,
     actionsRow
   );
 
@@ -1865,6 +1956,7 @@ function ensureSettingsPanel() {
       overviewInput,
       takeawaysCheckbox,
       actionCheckbox,
+      autoSendCheckbox,
       languageInput,
       instructionsTextarea,
       saveButton,
@@ -1889,11 +1981,38 @@ function ensureSettingsPanel() {
       overviewInput,
       takeawaysCheckbox,
       actionCheckbox,
+      autoSendCheckbox,
       languageInput,
       instructionsTextarea
     },
-    saveButton
+    saveButton,
+    previewTextarea,
+    previewCopyButton
   };
+
+  const updatePreview = () => updatePromptPreviewFromForm(settingsPanelRefs);
+  hostSelect.addEventListener('change', updatePreview);
+  overviewInput.addEventListener('input', updatePreview);
+  takeawaysCheckbox.addEventListener('change', updatePreview);
+  actionCheckbox.addEventListener('change', updatePreview);
+  autoSendCheckbox.addEventListener('change', updatePreview);
+  languageInput.addEventListener('input', updatePreview);
+  instructionsTextarea.addEventListener('input', updatePreview);
+
+  if (!(navigator?.clipboard && typeof navigator.clipboard.writeText === 'function')) {
+    previewCopyButton.disabled = true;
+    previewCopyButton.title = 'Clipboard access is unavailable in this context.';
+  } else {
+    previewCopyButton.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(previewTextarea.value);
+        setStatusMessage(status, 'Prompt preview copied to clipboard.', false);
+      } catch (error) {
+        console.error('Failed to copy prompt preview', error);
+        setStatusMessage(status, 'Unable to copy prompt preview. Please copy manually.', true);
+      }
+    });
+  }
 
   return settingsPanelRefs;
 }
@@ -1903,6 +2022,7 @@ async function openSettingsPanel() {
   await ensureSettingsLoaded();
 
   populateSettingsForm(refs.elements, currentSettings);
+  updatePromptPreviewFromForm(refs);
   refs.status.textContent = '';
   refs.status.classList.remove('ytlm-error');
 
@@ -1939,8 +2059,35 @@ function populateSettingsForm(elements, settings) {
   elements.overviewInput.value = settings.overviewSentences;
   elements.takeawaysCheckbox.checked = settings.includeTakeaways;
   elements.actionCheckbox.checked = settings.includeActionSteps;
+  elements.autoSendCheckbox.checked = settings.autoSendPrompt;
   elements.languageInput.value = settings.responseLanguage;
   elements.instructionsTextarea.value = settings.customInstructions;
+}
+
+function collectSettingsFromElements(elements) {
+  if (!elements) {
+    return { ...DEFAULT_SETTINGS };
+  }
+
+  return sanitizeSettings({
+    preferredChatHost: elements.hostSelect?.value,
+    overviewSentences: elements.overviewInput?.value,
+    includeTakeaways: elements.takeawaysCheckbox?.checked,
+    includeActionSteps: elements.actionCheckbox?.checked,
+    autoSendPrompt: elements.autoSendCheckbox?.checked,
+    responseLanguage: elements.languageInput?.value,
+    customInstructions: elements.instructionsTextarea?.value
+  });
+}
+
+function updatePromptPreviewFromForm(refs) {
+  if (!refs?.previewTextarea) {
+    return;
+  }
+
+  const previewSettings = collectSettingsFromElements(refs.elements);
+  refs.previewTextarea.value = buildPromptPreview(previewSettings);
+  refs.previewTextarea.scrollTop = 0;
 }
 
 async function handleSettingsSubmit({
@@ -1948,6 +2095,7 @@ async function handleSettingsSubmit({
   overviewInput,
   takeawaysCheckbox,
   actionCheckbox,
+  autoSendCheckbox,
   languageInput,
   instructionsTextarea,
   saveButton,
@@ -1958,6 +2106,7 @@ async function handleSettingsSubmit({
     overviewSentences: sanitizeNumber(overviewInput.value, currentSettings.overviewSentences, 1, 10),
     includeTakeaways: takeawaysCheckbox.checked,
     includeActionSteps: actionCheckbox.checked,
+    autoSendPrompt: autoSendCheckbox.checked,
     responseLanguage: sanitizeString(languageInput.value, currentSettings.responseLanguage),
     customInstructions: instructionsTextarea.value
   };
@@ -1967,6 +2116,9 @@ async function handleSettingsSubmit({
 
   try {
     await saveSettings(updated);
+    if (settingsPanelRefs) {
+      updatePromptPreviewFromForm(settingsPanelRefs);
+    }
     setStatusMessage(status, 'Settings saved.', false);
   } catch (error) {
     console.error('Failed to save settings', error);
