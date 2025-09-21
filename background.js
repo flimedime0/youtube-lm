@@ -215,7 +215,7 @@ function parseTranscriptFromGlaspHtml(html) {
     throw new Error('Glasp is requesting additional verification. Open glasp.co in your browser and retry.');
   }
 
-  const signInMatch = /Please\s+Sign\s+In/i.test(html);
+  const signInMatch = detectGlaspSignInPrompt(html);
 
   const nextDataMatch = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
   if (!nextDataMatch) {
@@ -249,6 +249,34 @@ function parseTranscriptFromGlaspHtml(html) {
       return text;
     })
     .join('\n');
+}
+
+function detectGlaspSignInPrompt(html) {
+  if (typeof html !== 'string' || html.length === 0) {
+    return false;
+  }
+
+  const signInPattern = /Please\s+Sign\s+In/i;
+
+  try {
+    if (typeof DOMParser === 'function') {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const bodyText = doc?.body?.textContent || '';
+      if (bodyText && signInPattern.test(bodyText)) {
+        return true;
+      }
+    }
+  } catch (error) {
+    // Ignore DOM parsing errors and fall back to text extraction via regex replacements.
+  }
+
+  const textOnly = html
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
+
+  return signInPattern.test(textOnly);
 }
 
 function extractTranscriptSegments(root) {
