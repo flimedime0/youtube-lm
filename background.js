@@ -2,7 +2,56 @@ const pendingPrompts = new Map();
 const MAX_INJECTION_ATTEMPTS = 10;
 const RETRY_DELAY_MS = 1000;
 
+const GLASP_READER_BASE_URL = 'https://glasp.co/reader?url=';
+const GLASP_TEXT_KEYS = [
+  'text',
+  'textOriginal',
+  'textDisplay',
+  'caption',
+  'content',
+  'body',
+  'snippet',
+  'description',
+  'transcriptText',
+  'textContent',
+  'value',
+  'displayText',
+  'plainText'
+];
+const GLASP_TIMESTAMP_KEYS = [
+  'start',
+  'startMs',
+  'startTime',
+  'startTimeText',
+  'startSeconds',
+  'offset',
+  'offsetMs',
+  'offsetSeconds',
+  'startOffset',
+  'time',
+  'timecode',
+  'timeCode',
+  'ts',
+  'timestamp',
+  'displayTime',
+  'timeText',
+  'begin'
+];
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'fetchTranscriptFromGlasp' && typeof message.videoUrl === 'string') {
+    fetchTranscriptFromGlasp(message.videoUrl)
+      .then((transcript) => sendResponse({ status: 'success', transcript }))
+      .catch((error) => {
+        console.error('Failed to fetch transcript from Glasp:', error);
+        sendResponse({
+          status: 'error',
+          error: error?.message || 'Unable to retrieve transcript from Glasp.'
+        });
+      });
+    return true;
+  }
+
   if (message?.type === 'openChatGPT' && typeof message.prompt === 'string') {
     chrome.tabs.create({ url: 'https://chat.openai.com/' }, (tab) => {
       if (tab?.id !== undefined) {
@@ -132,4 +181,323 @@ function injectPrompt(prompt) {
   const inputEvent = new Event('input', { bubbles: true });
   textArea.dispatchEvent(inputEvent);
   return true;
+}
+
+async function fetchTranscriptFromGlasp(videoUrl) {
+  const targetUrl = `${GLASP_READER_BASE_URL}${encodeURIComponent(videoUrl)}`;
+  let response;
+  try {
+    response = await fetch(targetUrl, {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
+  } catch (error) {
+    throw new Error('Unable to reach Glasp.');
+  }
+
+  if (!response.ok) {
+    throw new Error(`Glasp request failed with status ${response.status}`);
+  }
+
+  const html = await response.text();
+  return parseTranscriptFromGlaspHtml(html);
+}
+
+function parseTranscriptFromGlaspHtml(html) {
+  if (typeof html !== 'string' || html.length === 0) {
+    throw new Error('Empty response received from Glasp.');
+  }
+
+  if (/Attention Required! \| Cloudflare/i.test(html)) {
+    throw new Error('Glasp is requesting additional verification. Open glasp.co in your browser and retry.');
+  }
+
+  const signInMatch = /Please\s+Sign\s+In/i.test(html);
+
+  const nextDataMatch = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (!nextDataMatch) {
+    if (signInMatch) {
+      throw new Error('Please sign in to Glasp in this browser to access transcripts.');
+    }
+    throw new Error('Unable to locate transcript data on Glasp.');
+  }
+
+  let nextData;
+  try {
+    nextData = JSON.parse(nextDataMatch[1]);
+  } catch (error) {
+    throw new Error('Failed to parse transcript data returned by Glasp.');
+  }
+
+  const segments = extractTranscriptSegments(nextData);
+  if (!segments || segments.length === 0) {
+    if (signInMatch) {
+      throw new Error('Please sign in to Glasp to view transcripts for this video.');
+    }
+    throw new Error('Transcript data not available from Glasp for this video.');
+  }
+
+  return segments
+    .map((segment) => {
+      const text = segment.text;
+      if (segment.timestamp) {
+        return `[${segment.timestamp}] ${text}`;
+      }
+      return text;
+    })
+    .join('\n');
+}
+
+function extractTranscriptSegments(root) {
+  const visited = new WeakSet();
+  let best = null;
+
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    if (visited.has(node)) {
+      return;
+    }
+    visited.add(node);
+
+    if (Array.isArray(node)) {
+      const segments = node.map((item) => normalizeTranscriptSegment(item)).filter(Boolean);
+      if (segments.length >= 5) {
+        const timestampCount = segments.filter((segment) => Boolean(segment.timestamp)).length;
+        const averageLength =
+          segments.reduce((total, segment) => total + segment.text.length, 0) / segments.length;
+
+        const meetsTimestampRequirement = timestampCount >= Math.max(3, Math.floor(segments.length * 0.5));
+        const meetsLengthRequirement = averageLength >= 8;
+
+        if ((meetsTimestampRequirement && meetsLengthRequirement) || (!best && segments.length >= 5)) {
+          if (!best || segments.length > best.length) {
+            best = segments;
+          }
+        }
+      }
+
+      for (const item of node) {
+        if (item && typeof item === 'object') {
+          visit(item);
+        }
+      }
+      return;
+    }
+
+    for (const value of Object.values(node)) {
+      if (value && typeof value === 'object') {
+        visit(value);
+      }
+    }
+  };
+
+  visit(root);
+  return best;
+}
+
+function normalizeTranscriptSegment(item) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+
+  const text = extractTextValue(item);
+  if (!text) {
+    return null;
+  }
+
+  const timestamp = extractTimestampValue(item);
+  return { text, timestamp };
+}
+
+function extractTextValue(node) {
+  const visited = new WeakSet();
+  const stack = [node];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current == null) {
+      continue;
+    }
+
+    if (typeof current === 'string') {
+      const cleaned = cleanText(current);
+      if (cleaned) {
+        return cleaned;
+      }
+      continue;
+    }
+
+    if (Array.isArray(current)) {
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        stack.push(current[index]);
+      }
+      continue;
+    }
+
+    if (typeof current === 'object') {
+      if (visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+
+      if (typeof current.simpleText === 'string') {
+        const simple = cleanText(current.simpleText);
+        if (simple) {
+          return simple;
+        }
+      }
+
+      if (typeof current.text === 'string') {
+        const text = cleanText(current.text);
+        if (text) {
+          return text;
+        }
+      }
+
+      for (const key of GLASP_TEXT_KEYS) {
+        if (key in current) {
+          stack.push(current[key]);
+        }
+      }
+
+      for (const value of Object.values(current)) {
+        if (value && (typeof value === 'object' || typeof value === 'string')) {
+          stack.push(value);
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractTimestampValue(node) {
+  const visited = new WeakSet();
+  const stack = [node];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current == null) {
+      continue;
+    }
+
+    if (typeof current === 'number') {
+      const formatted = formatSecondsToTimestamp(current);
+      if (formatted) {
+        return formatted;
+      }
+      continue;
+    }
+
+    if (typeof current === 'string') {
+      const formatted = normalizeTimestampString(current);
+      if (formatted) {
+        return formatted;
+      }
+      continue;
+    }
+
+    if (Array.isArray(current)) {
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        stack.push(current[index]);
+      }
+      continue;
+    }
+
+    if (typeof current === 'object') {
+      if (visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+
+      for (const key of GLASP_TIMESTAMP_KEYS) {
+        if (key in current) {
+          stack.push(current[key]);
+        }
+      }
+
+      for (const value of Object.values(current)) {
+        if (value && (typeof value === 'object' || typeof value === 'string' || typeof value === 'number')) {
+          stack.push(value);
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function cleanText(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  return cleaned || null;
+}
+
+function normalizeTimestampString(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const colonMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (colonMatch) {
+    const [, part1, part2, part3] = colonMatch;
+    if (typeof part3 === 'string') {
+      const hours = part1.padStart(2, '0');
+      const minutes = part2.padStart(2, '0');
+      const seconds = part3.padStart(2, '0');
+      return `${hours}:${minutes}:${seconds}`;
+    }
+    const minutes = part1.padStart(2, '0');
+    const seconds = part2.padStart(2, '0');
+    return `${minutes}:${seconds}`;
+  }
+
+  const numeric = Number(trimmed);
+  if (!Number.isNaN(numeric)) {
+    return formatSecondsToTimestamp(numeric);
+  }
+
+  return null;
+}
+
+function formatSecondsToTimestamp(value) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  let seconds = value;
+  if (seconds > 1000 && seconds < 1000000) {
+    seconds = seconds / 1000;
+  }
+
+  if (seconds < 0) {
+    seconds = 0;
+  }
+
+  const rounded = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const secs = rounded % 60;
+
+  const paddedMinutes = String(minutes).padStart(2, '0');
+  const paddedSeconds = String(secs).padStart(2, '0');
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${paddedMinutes}:${paddedSeconds}`;
+  }
+
+  return `${paddedMinutes}:${paddedSeconds}`;
 }
