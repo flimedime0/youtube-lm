@@ -27,13 +27,19 @@ let settingsLoaded = false;
 let settingsLoadPromise = null;
 let settingsPanelRefs = null;
 let lastFocusedElement = null;
+let pendingButtonUpdate = false;
 
 ensureGlobalStyles();
 ensureSettingsLoaded().catch((error) => console.error('Failed to pre-load settings', error));
 addOrUpdateButtons();
 
-const observer = new MutationObserver(() => {
-  addOrUpdateButtons();
+const observer = new MutationObserver((mutations) => {
+  for (const mutation of mutations) {
+    if (mutation.type === 'childList' && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
+      scheduleButtonUpdate();
+      break;
+    }
+  }
 });
 
 if (document.body) {
@@ -54,6 +60,29 @@ window.addEventListener('yt-navigate-finish', () => {
 function addOrUpdateButtons() {
   ensureWatchButtons();
   ensureShortsButtons();
+}
+
+function scheduleButtonUpdate() {
+  if (pendingButtonUpdate) {
+    return;
+  }
+
+  pendingButtonUpdate = true;
+
+  const runUpdate = () => {
+    pendingButtonUpdate = false;
+    try {
+      addOrUpdateButtons();
+    } catch (error) {
+      console.error('Failed to update extension UI after DOM mutation', error);
+    }
+  };
+
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(runUpdate);
+  } else {
+    setTimeout(runUpdate, 50);
+  }
 }
 
 function ensureWatchButtons() {
