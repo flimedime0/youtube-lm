@@ -272,12 +272,13 @@ function ensureContextualActionButton({ id, container, context }) {
 
     button.append(icon, label, caret);
     button.setAttribute('aria-label', BUTTON_LABELS.idle);
-    button.title = BUTTON_LABELS.idle;
+    button.removeAttribute('title');
 
     container.appendChild(button);
   } else {
     button.dataset.ytlmContext = context;
     button.classList.add('ytlm-action-button');
+    button.removeAttribute('title');
   }
 
   if (!button.querySelector('.ytlm-button-icon')) {
@@ -817,18 +818,10 @@ function positionTooltip(button, tooltip) {
   let top;
   let left;
 
-  if (button.dataset.ytlmContext === 'shorts') {
-    top = anchorRect.top + anchorRect.height / 2 - tooltipRect.height / 2;
-    left = anchorRect.right + gap;
-    if (left + tooltipRect.width > viewportWidth - gap) {
-      left = anchorRect.left - tooltipRect.width - gap;
-    }
-  } else {
-    top = anchorRect.bottom + gap;
-    left = anchorRect.left + anchorRect.width / 2 - tooltipRect.width / 2;
-    if (top + tooltipRect.height > viewportHeight - gap) {
-      top = anchorRect.top - tooltipRect.height - gap;
-    }
+  top = anchorRect.bottom + gap;
+  left = anchorRect.left + anchorRect.width / 2 - tooltipRect.width / 2;
+  if (top + tooltipRect.height > viewportHeight - gap) {
+    top = anchorRect.top - tooltipRect.height - gap;
   }
 
   top = Math.max(gap, Math.min(top, viewportHeight - tooltipRect.height - gap));
@@ -984,7 +977,7 @@ function setButtonState(button, state) {
   }
 
   button.setAttribute('aria-label', label);
-  button.title = label;
+  button.removeAttribute('title');
 
   updateActiveTooltip(button);
 
@@ -1196,6 +1189,13 @@ function ensureGlobalStyles() {
       margin: 4px 0 12px;
     }
 
+    .ytlm-shorts-button-slot {
+      display: flex;
+      justify-content: center;
+      width: 100%;
+      margin-top: 12px;
+    }
+
     .ytlm-action-button {
       position: relative;
       display: inline-flex;
@@ -1246,6 +1246,10 @@ function ensureGlobalStyles() {
     .ytlm-action-button:focus-visible {
       outline: 3px solid var(--yt-spec-brand-button-background, #065fd4);
       outline-offset: 2px;
+    }
+
+    .ytlm-action-button--shorts:focus-visible {
+      outline-offset: 4px;
     }
 
     .ytlm-action-button--watch {
@@ -2120,6 +2124,7 @@ async function handleSettingsSubmit({
       updatePromptPreviewFromForm(settingsPanelRefs);
     }
     setStatusMessage(status, 'Settings saved.', false);
+    closeSettingsPanel();
   } catch (error) {
     console.error('Failed to save settings', error);
     setStatusMessage(status, 'Failed to save settings. Please try again.', true);
