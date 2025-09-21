@@ -353,8 +353,21 @@ function isTranscriptMeaningful(transcript) {
     return false;
   }
 
-  const collapsed = trimmed.replace(/\s+/g, '').toLowerCase();
-  if (collapsed.includes('productsdiscoverabout')) {
+  const trailingLines = trimmed
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const marketingFooterPresent = trailingLines.slice(-5).some((line) => {
+    if (isStrongMarketingLine(line)) {
+      return true;
+    }
+
+    const normalized = normalizeMarketingLine(line);
+    return normalized ? GLASP_MARKETING_LINE_SET.has(normalized) : false;
+  });
+
+  if (marketingFooterPresent) {
     return false;
   }
 
@@ -458,17 +471,14 @@ function truncateMarketingContent(text) {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (!isMarketingFooterLine(line)) {
+    const normalized = normalizeMarketingLine(line);
+    if (!normalized) {
       continue;
     }
 
-    const remaining = lines.slice(index);
-    const marketingCount = remaining.reduce(
-      (count, candidate) => count + (isMarketingFooterLine(candidate) ? 1 : 0),
-      0
-    );
-
-    if (!isStrongMarketingLine(line) && marketingCount < 2) {
+    const isKnownFooter = GLASP_MARKETING_LINE_SET.has(normalized);
+    const isStrongFooter = isStrongMarketingLine(line);
+    if (!isKnownFooter && !isStrongFooter) {
       continue;
     }
 
