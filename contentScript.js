@@ -5,6 +5,10 @@ const SETTINGS_PANEL_ID = 'ytlm-settings-panel';
 const SETTINGS_STORAGE_KEY = 'ytlmSettingsV1';
 const STYLE_ELEMENT_ID = 'ytlm-shared-styles';
 const ACTION_MENU_VISIBLE_CLASS = 'ytlm-visible';
+const TOOLTIP_ID = 'ytlm-shared-tooltip';
+const TOOLTIP_VISIBLE_CLASS = 'ytlm-tooltip-visible';
+const TOOLTIP_DELAY_MS = 400;
+const TOOLTIP_HIDE_DELAY_MS = 120;
 
 const BUTTON_LABELS = {
   idle: 'Summarize with ChatGPT',
@@ -29,6 +33,11 @@ let lastFocusedElement = null;
 let pendingButtonUpdate = false;
 let activeMenuState = null;
 let menuDismissListenersAttached = false;
+let tooltipAnchor = null;
+let tooltipScheduledFor = null;
+let tooltipShowTimeout = null;
+let tooltipHideTimeout = null;
+let tooltipDismissListenersAttached = false;
 
 ensureGlobalStyles();
 ensureSettingsLoaded().catch((error) => console.error('Failed to pre-load settings', error));
@@ -69,6 +78,7 @@ if (document.body) {
 }
 
 window.addEventListener('yt-navigate-finish', () => {
+  hideTooltip(true);
   setTimeout(() => {
     addOrUpdateButtons();
     resetButtonStates();
@@ -145,6 +155,7 @@ function ensureWatchButtons() {
   if (isShortsPage()) {
     const existingWatchButton = document.getElementById(WATCH_BUTTON_ID);
     if (existingWatchButton) {
+      cancelTooltip(existingWatchButton);
       existingWatchButton.remove();
     }
 
@@ -175,6 +186,7 @@ function ensureShortsButtons() {
 
   if (!isShorts) {
     if (slot) {
+      dismissTooltipForElement(slot);
       slot.remove();
     }
     removeActionMenu(SHORTS_BUTTON_ID);
@@ -184,6 +196,7 @@ function ensureShortsButtons() {
   const host = findShortsActionsHost();
   if (!host) {
     if (slot) {
+      dismissTooltipForElement(slot);
       slot.remove();
     }
     removeActionMenu(SHORTS_BUTTON_ID);
@@ -316,6 +329,53 @@ function ensureContextualActionButton({ id, container, context }) {
     button.dataset.ytlmMenuBound = 'true';
   }
 
+  if (!button.dataset.ytlmTooltipBound) {
+    const handlePointerEnter = (event) => {
+      const target = event.currentTarget;
+      if (target instanceof HTMLElement) {
+        scheduleTooltip(target);
+      }
+    };
+    const handlePointerLeave = (event) => {
+      const target = event.currentTarget;
+      if (target instanceof HTMLElement) {
+        cancelTooltip(target);
+      }
+    };
+    const handleFocus = (event) => {
+      const target = event.currentTarget;
+      if (target instanceof HTMLElement) {
+        scheduleTooltip(target);
+      }
+    };
+    const handleBlur = (event) => {
+      const target = event.currentTarget;
+      if (target instanceof HTMLElement) {
+        cancelTooltip(target);
+      }
+    };
+    const handlePointerDown = (event) => {
+      const target = event.currentTarget;
+      if (target instanceof HTMLElement) {
+        cancelTooltip(target);
+        hideTooltip(true);
+      }
+    };
+
+    button.addEventListener('mouseenter', handlePointerEnter);
+    button.addEventListener('mouseleave', handlePointerLeave);
+    button.addEventListener('focus', handleFocus);
+    button.addEventListener('blur', handleBlur);
+    button.addEventListener('pointerdown', handlePointerDown);
+    button.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' || event.key === 'Esc') {
+        hideTooltip(true);
+      }
+    });
+
+    button.dataset.ytlmTooltipBound = 'true';
+  }
+
   const menu = ensureActionMenu(button, context);
   button.setAttribute('aria-controls', menu.id);
 
@@ -385,6 +445,7 @@ function ensureActionMenu(button, context) {
 }
 
 function toggleActionMenu(button, context) {
+  hideTooltip(true);
   const menu = ensureActionMenu(button, context);
 
   if (menu.dataset.ytlmOpen === 'true') {
@@ -519,6 +580,303 @@ function detachMenuDismissListeners() {
   window.removeEventListener('scroll', handleMenuScroll, true);
 }
 
+function ensureTooltipElement() {
+  let tooltip = document.getElementById(TOOLTIP_ID);
+  if (tooltip) {
+    return tooltip;
+  }
+
+  if (!document.body) {
+    return null;
+  }
+
+  tooltip = document.createElement('div');
+  tooltip.id = TOOLTIP_ID;
+  tooltip.className = 'ytlm-tooltip';
+  tooltip.setAttribute('role', 'tooltip');
+  tooltip.style.display = 'none';
+  document.body.appendChild(tooltip);
+
+  return tooltip;
+}
+
+function scheduleTooltip(button) {
+  if (!button || button.dataset.ytlmBusy === 'true') {
+    return;
+  }
+
+  if (!button.isConnected) {
+    return;
+  }
+
+  if (tooltipAnchor && tooltipAnchor !== button) {
+    hideTooltip(true);
+  }
+
+  tooltipScheduledFor = button;
+  if (tooltipShowTimeout) {
+    clearTimeout(tooltipShowTimeout);
+  }
+  if (tooltipHideTimeout) {
+    clearTimeout(tooltipHideTimeout);
+    tooltipHideTimeout = null;
+  }
+
+  tooltipShowTimeout = window.setTimeout(() => {
+    tooltipShowTimeout = null;
+    const target = tooltipScheduledFor;
+    tooltipScheduledFor = null;
+    if (target) {
+      showTooltip(target);
+    }
+  }, TOOLTIP_DELAY_MS);
+}
+
+function cancelTooltip(button) {
+  if (!button) {
+    return;
+  }
+
+  if (tooltipScheduledFor === button) {
+    tooltipScheduledFor = null;
+    if (tooltipShowTimeout) {
+      clearTimeout(tooltipShowTimeout);
+      tooltipShowTimeout = null;
+    }
+  }
+
+  if (tooltipAnchor === button) {
+    hideTooltip(true);
+  }
+}
+
+function showTooltip(button) {
+  if (!button || button.dataset.ytlmBusy === 'true' || !button.isConnected) {
+    return;
+  }
+
+  const tooltip = ensureTooltipElement();
+  if (!tooltip) {
+    return;
+  }
+
+  const label = getTooltipLabel(button);
+  if (!label) {
+    return;
+  }
+
+  if (tooltipAnchor && tooltipAnchor !== button) {
+    hideTooltip(true);
+  }
+
+  tooltip.textContent = label;
+  tooltip.style.display = 'inline-flex';
+  tooltip.style.visibility = 'hidden';
+  tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
+
+  tooltipAnchor = button;
+
+  positionTooltip(button, tooltip);
+
+  const describedBy = button.getAttribute('aria-describedby');
+  const ids = new Set((describedBy || '').split(/\s+/).filter(Boolean));
+  ids.add(TOOLTIP_ID);
+  button.setAttribute('aria-describedby', Array.from(ids).join(' '));
+
+  attachTooltipDismissListeners();
+
+  requestAnimationFrame(() => {
+    if (tooltipAnchor !== button) {
+      return;
+    }
+
+    tooltip.style.visibility = '';
+    positionTooltip(button, tooltip);
+    tooltip.classList.add(TOOLTIP_VISIBLE_CLASS);
+  });
+}
+
+function hideTooltip(immediate = false) {
+  if (tooltipShowTimeout) {
+    clearTimeout(tooltipShowTimeout);
+    tooltipShowTimeout = null;
+  }
+  tooltipScheduledFor = null;
+
+  const tooltip = document.getElementById(TOOLTIP_ID);
+  const anchor = tooltipAnchor;
+  tooltipAnchor = null;
+
+  if (anchor) {
+    const describedBy = anchor.getAttribute('aria-describedby');
+    if (describedBy) {
+      const ids = describedBy.split(/\s+/).filter(Boolean);
+      const filtered = ids.filter((id) => id !== TOOLTIP_ID);
+      if (filtered.length > 0) {
+        anchor.setAttribute('aria-describedby', filtered.join(' '));
+      } else {
+        anchor.removeAttribute('aria-describedby');
+      }
+    }
+  }
+
+  if (!tooltip) {
+    detachTooltipDismissListeners();
+    return;
+  }
+
+  tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
+
+  const finalize = () => {
+    tooltip.style.display = 'none';
+    tooltip.style.visibility = '';
+  };
+
+  if (tooltipHideTimeout) {
+    clearTimeout(tooltipHideTimeout);
+    tooltipHideTimeout = null;
+  }
+
+  if (immediate) {
+    finalize();
+  } else {
+    tooltipHideTimeout = window.setTimeout(() => {
+      finalize();
+      tooltipHideTimeout = null;
+    }, TOOLTIP_HIDE_DELAY_MS);
+  }
+
+  detachTooltipDismissListeners();
+}
+
+function updateActiveTooltip(button) {
+  if (!button) {
+    return;
+  }
+
+  if (tooltipScheduledFor === button && button.dataset.ytlmBusy !== 'true') {
+    return;
+  }
+
+  if (tooltipAnchor !== button) {
+    return;
+  }
+
+  const tooltip = document.getElementById(TOOLTIP_ID);
+  if (!tooltip) {
+    return;
+  }
+
+  const label = getTooltipLabel(button);
+  if (!label) {
+    hideTooltip(true);
+    return;
+  }
+
+  tooltip.textContent = label;
+  tooltip.style.display = 'inline-flex';
+  positionTooltip(button, tooltip);
+
+  requestAnimationFrame(() => {
+    if (tooltipAnchor === button) {
+      positionTooltip(button, tooltip);
+    }
+  });
+}
+
+function getTooltipLabel(button) {
+  if (!button) {
+    return '';
+  }
+
+  const ariaLabel = button.getAttribute('aria-label');
+  if (ariaLabel && ariaLabel.trim().length > 0) {
+    return ariaLabel.trim();
+  }
+
+  const title = button.getAttribute('title');
+  if (title && title.trim().length > 0) {
+    return title.trim();
+  }
+
+  return button.textContent ? button.textContent.trim() : '';
+}
+
+function positionTooltip(button, tooltip) {
+  if (!button || !tooltip) {
+    return;
+  }
+
+  const anchorRect = button.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const gap = 8;
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+
+  let top;
+  let left;
+
+  if (button.dataset.ytlmContext === 'shorts') {
+    top = anchorRect.top + anchorRect.height / 2 - tooltipRect.height / 2;
+    left = anchorRect.right + gap;
+    if (left + tooltipRect.width > viewportWidth - gap) {
+      left = anchorRect.left - tooltipRect.width - gap;
+    }
+  } else {
+    top = anchorRect.bottom + gap;
+    left = anchorRect.left + anchorRect.width / 2 - tooltipRect.width / 2;
+    if (top + tooltipRect.height > viewportHeight - gap) {
+      top = anchorRect.top - tooltipRect.height - gap;
+    }
+  }
+
+  top = Math.max(gap, Math.min(top, viewportHeight - tooltipRect.height - gap));
+  left = Math.max(gap, Math.min(left, viewportWidth - tooltipRect.width - gap));
+
+  tooltip.style.top = `${Math.round(top)}px`;
+  tooltip.style.left = `${Math.round(left)}px`;
+}
+
+function attachTooltipDismissListeners() {
+  if (tooltipDismissListenersAttached) {
+    return;
+  }
+
+  tooltipDismissListenersAttached = true;
+  document.addEventListener('pointerdown', handleTooltipDismiss, true);
+  window.addEventListener('scroll', handleTooltipDismiss, true);
+  window.addEventListener('resize', handleTooltipDismiss, true);
+}
+
+function detachTooltipDismissListeners() {
+  if (!tooltipDismissListenersAttached) {
+    return;
+  }
+
+  tooltipDismissListenersAttached = false;
+  document.removeEventListener('pointerdown', handleTooltipDismiss, true);
+  window.removeEventListener('scroll', handleTooltipDismiss, true);
+  window.removeEventListener('resize', handleTooltipDismiss, true);
+}
+
+function handleTooltipDismiss() {
+  hideTooltip(true);
+}
+
+function dismissTooltipForElement(element) {
+  if (!element) {
+    return;
+  }
+
+  if (tooltipScheduledFor && element.contains(tooltipScheduledFor)) {
+    cancelTooltip(tooltipScheduledFor);
+  }
+
+  if (tooltipAnchor && element.contains(tooltipAnchor)) {
+    cancelTooltip(tooltipAnchor);
+  }
+}
+
 function handleMenuDismissPointer(event) {
   if (!activeMenuState) {
     return;
@@ -626,6 +984,8 @@ function setButtonState(button, state) {
 
   button.setAttribute('aria-label', label);
   button.title = label;
+
+  updateActiveTooltip(button);
 
   const menuId = button.getAttribute('aria-controls');
   if (menuId) {
@@ -822,6 +1182,7 @@ function ensureGlobalStyles() {
       width: 48px;
       height: 48px;
       flex: none;
+      margin: 4px 0 12px;
     }
 
     .ytlm-action-button {
@@ -896,6 +1257,28 @@ function ensureGlobalStyles() {
       background: var(--yt-spec-touch-response, rgba(0, 0, 0, 0.12));
     }
 
+    ytd-app[dark] .ytlm-action-button--watch,
+    html[dark] .ytlm-action-button--watch,
+    body[dark] .ytlm-action-button--watch {
+      border-color: rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--yt-spec-text-primary-inverse, #f1f1f1);
+    }
+
+    ytd-app[dark] .ytlm-action-button--watch:hover:not(.ytlm-busy),
+    html[dark] .ytlm-action-button--watch:hover:not(.ytlm-busy),
+    body[dark] .ytlm-action-button--watch:hover:not(.ytlm-busy) {
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(255, 255, 255, 0.16);
+    }
+
+    ytd-app[dark] .ytlm-action-button--watch:active,
+    html[dark] .ytlm-action-button--watch:active,
+    body[dark] .ytlm-action-button--watch:active {
+      background: rgba(255, 255, 255, 0.22);
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
     .ytlm-action-button--watch .ytlm-button-icon {
       display: none;
     }
@@ -916,20 +1299,41 @@ function ensureGlobalStyles() {
       width: 48px;
       height: 48px;
       border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.28);
-      background: rgba(15, 15, 15, 0.88);
-      color: #ffffff;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      background: rgba(0, 0, 0, 0.06);
+      color: var(--yt-spec-text-primary, #0f0f0f);
     }
 
     .ytlm-action-button--shorts:hover:not(.ytlm-busy) {
-      transform: translateY(-2px);
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
-      background: rgba(15, 15, 15, 0.94);
+      background: rgba(0, 0, 0, 0.1);
+      border-color: rgba(0, 0, 0, 0.14);
     }
 
     .ytlm-action-button--shorts:active {
-      transform: translateY(0);
+      background: rgba(0, 0, 0, 0.14);
+      border-color: rgba(0, 0, 0, 0.2);
+    }
+
+    ytd-app[dark] .ytlm-action-button--shorts,
+    html[dark] .ytlm-action-button--shorts,
+    body[dark] .ytlm-action-button--shorts {
+      border-color: rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--yt-spec-text-primary-inverse, #f1f1f1);
+    }
+
+    ytd-app[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy),
+    html[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy),
+    body[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy) {
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    ytd-app[dark] .ytlm-action-button--shorts:active,
+    html[dark] .ytlm-action-button--shorts:active,
+    body[dark] .ytlm-action-button--shorts:active {
+      background: rgba(255, 255, 255, 0.24);
+      border-color: rgba(255, 255, 255, 0.24);
     }
 
     .ytlm-action-button--shorts .ytlm-button-label,
@@ -942,8 +1346,8 @@ function ensureGlobalStyles() {
       height: 24px;
       background-repeat: no-repeat;
       background-position: center;
-      background-size: 22px 22px;
-      background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.75a5.25 5.25 0 0 1 4.72 7.72A5.25 5.25 0 0 1 19 14.25 5.25 5.25 0 0 1 8.53 18.7 5.25 5.25 0 0 1 5 13.75a5.25 5.25 0 0 1 2.54-9.48"/><path d="M8.2 7.4 12 9.5l3.8-2.1"/><path d="M8.2 16.6v-4.2l-3.2-1.8"/><path d="M15.8 16.6v-4.2l3.2-1.8"/></svg>');
+      background-size: 24px 24px;
+      background-image: url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%3E%3Cpath%20fill%3D%22%23FF0000%22%20d%3D%22M10.8%202.1%2016.6%205c1.4.7%201.9%202.4%201.2%203.8-.2.4-.5.7-.8.9l-1.8%201.1%201.8%201c1.4.7%201.9%202.4%201.2%203.8-.2.4-.5.7-.8.9l-5.8%203c-1.5.8-3.3.2-4.1-1.2-.4-.7-.5-1.5-.3-2.3l.1-.3-1.4-.7c-1.4-.7-1.9-2.4-1.2-3.8.2-.4.5-.7.8-.9l1.8-1.1-1.8-1c-1.4-.7-1.9-2.4-1.2-3.8.2-.4.5-.7.8-.9l5.8-3c.9-.5%202-.5%202.9%200Z%22/%3E%3Cpath%20fill%3D%22%23FFFFFF%22%20d%3D%22M10%208.75v6.5l5-3.25-5-3.25Z%22/%3E%3C/svg%3E');
     }
 
     .ytlm-action-button--shorts.ytlm-busy {
@@ -953,11 +1357,53 @@ function ensureGlobalStyles() {
     .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon {
       background-image: none;
       border-radius: 50%;
-      border: 3px solid rgba(255, 255, 255, 0.35);
-      border-top-color: rgba(255, 255, 255, 0.95);
+      border: 3px solid rgba(0, 0, 0, 0.25);
+      border-top-color: rgba(0, 0, 0, 0.6);
       width: 24px;
       height: 24px;
       animation: ytlm-spin 1s linear infinite;
+    }
+
+    ytd-app[dark] .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon,
+    html[dark] .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon,
+    body[dark] .ytlm-action-button--shorts.ytlm-busy .ytlm-button-icon {
+      border-color: rgba(255, 255, 255, 0.35);
+      border-top-color: rgba(255, 255, 255, 0.9);
+    }
+
+    .ytlm-tooltip {
+      position: fixed;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      line-height: 1.4;
+      font-weight: 500;
+      font-family: Roboto, Arial, sans-serif;
+      background: rgba(28, 28, 28, 0.92);
+      color: #ffffff;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.18s ease, transform 0.18s ease;
+      white-space: nowrap;
+      z-index: 2147483601;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+      will-change: transform, opacity;
+    }
+
+    .ytlm-tooltip.${TOOLTIP_VISIBLE_CLASS} {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    ytd-app[dark] .ytlm-tooltip,
+    html[dark] .ytlm-tooltip,
+    body[dark] .ytlm-tooltip {
+      background: rgba(0, 0, 0, 0.92);
+      color: #ffffff;
     }
 
     @keyframes ytlm-spin {
