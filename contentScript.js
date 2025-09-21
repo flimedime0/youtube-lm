@@ -86,6 +86,20 @@ function scheduleButtonUpdate() {
 }
 
 function ensureWatchButtons() {
+  if (isShortsPage()) {
+    const existingWatchButton = document.getElementById(WATCH_BUTTON_ID);
+    if (existingWatchButton) {
+      existingWatchButton.remove();
+    }
+
+    const existingSettingsButton = document.getElementById(WATCH_SETTINGS_BUTTON_ID);
+    if (existingSettingsButton) {
+      existingSettingsButton.remove();
+    }
+
+    return;
+  }
+
   const container =
     document.querySelector('#top-row #actions #top-level-buttons-computed') ||
     document.querySelector('#top-level-buttons-computed');
