@@ -276,8 +276,52 @@ function detectGlaspSignInPrompt(html) {
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ');
 
-  return signInPattern.test(textOnly);
+  const normalizedText = decodeHtmlEntities(textOnly);
+
+  return signInPattern.test(normalizedText);
 }
+
+function decodeHtmlEntities(text) {
+  if (typeof text !== 'string' || text.length === 0) {
+    return '';
+  }
+
+  let decoded = text;
+
+  const whitespaceEntityPatterns = [
+    /&nbsp;/gi,
+    /&#160;/gi,
+    /&#xA0;/gi,
+    /&#xa0;/gi,
+    /&NonBreakingSpace;/gi,
+    /&ensp;/gi,
+    /&#8194;/gi,
+    /&#x2002;/gi,
+    /&emsp;/gi,
+    /&#8195;/gi,
+    /&#x2003;/gi,
+    /&thinsp;/gi,
+    /&#8201;/gi,
+    /&#x2009;/gi
+  ];
+
+  for (const pattern of whitespaceEntityPatterns) {
+    decoded = decoded.replace(pattern, ' ');
+  }
+
+  decoded = decoded.replace(/&amp;/gi, '&');
+  decoded = decoded.replace(/&lt;/gi, '<');
+  decoded = decoded.replace(/&gt;/gi, '>');
+
+  return decoded;
+}
+
+(() => {
+  const sampleHtml = '<div>Please&nbsp;Sign&nbsp;In</div>';
+  if (!detectGlaspSignInPrompt(sampleHtml)) {
+    console.warn('Sign-in detection failed for HTML entity sample.');
+  }
+})();
 
 function extractTranscriptSegments(root) {
   const visited = new WeakSet();
