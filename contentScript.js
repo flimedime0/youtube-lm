@@ -94,11 +94,7 @@ function ensureWatchButtons() {
       existingWatchButton.remove();
     }
 
-    const existingSettingsButton = document.getElementById(WATCH_SETTINGS_BUTTON_ID);
-    if (existingSettingsButton) {
-      existingSettingsButton.remove();
-    }
-
+    removeActionMenu(WATCH_BUTTON_ID);
     return;
   }
 
@@ -110,14 +106,10 @@ function ensureWatchButtons() {
     return;
   }
 
-  const referenceButton =
-    container.querySelector('button.yt-spec-button-shape-next') || container.querySelector('button');
-
   const summarizeButton = ensureContextualActionButton({
     id: WATCH_BUTTON_ID,
     container,
-    context: 'watch',
-    referenceButton
+    context: 'watch'
   });
 
   setButtonState(summarizeButton, summarizeButton.dataset.ytlmState || 'idle');
@@ -125,35 +117,66 @@ function ensureWatchButtons() {
 
 function ensureShortsButtons() {
   const isShorts = isShortsPage();
-  let container = document.getElementById(SHORTS_CONTAINER_ID);
+  let slot = document.getElementById(SHORTS_CONTAINER_ID);
 
   if (!isShorts) {
-    if (container) {
-      container.remove();
+    if (slot) {
+      slot.remove();
     }
     removeActionMenu(SHORTS_BUTTON_ID);
     return;
   }
 
-  if (!container) {
-    if (!document.body) {
-      return;
+  const host = findShortsActionsHost();
+  if (!host) {
+    if (slot) {
+      slot.remove();
     }
-    container = document.createElement('div');
-    container.id = SHORTS_CONTAINER_ID;
-    document.body.appendChild(container);
+    removeActionMenu(SHORTS_BUTTON_ID);
+    return;
+  }
+
+  if (!slot) {
+    slot = document.createElement('div');
+    slot.id = SHORTS_CONTAINER_ID;
+    slot.className = 'ytlm-shorts-button-slot';
+    host.appendChild(slot);
+  } else if (slot.parentElement !== host) {
+    slot.remove();
+    host.appendChild(slot);
   }
 
   const summarizeButton = ensureContextualActionButton({
     id: SHORTS_BUTTON_ID,
-    container,
+    container: slot,
     context: 'shorts'
   });
 
   setButtonState(summarizeButton, summarizeButton.dataset.ytlmState || 'idle');
 }
 
-function ensureContextualActionButton({ id, container, context, referenceButton }) {
+function findShortsActionsHost() {
+  const selectors = [
+    'ytd-reel-player-overlay-renderer #actions',
+    '#actions.ytd-reel-player-overlay-renderer',
+    'ytd-reel-player-overlay-renderer #actions ytd-reel-player-toolbar-renderer',
+    'ytd-reel-player-overlay-renderer #actions ytd-reel-fixed-player-overlay-renderer',
+    'ytd-reel-player-overlay-renderer #buttons',
+    '#shorts-player #actions',
+    '#shorts-player #actions ytd-reel-player-toolbar-renderer'
+  ];
+
+  for (const selector of selectors) {
+    const element = document.querySelector(selector);
+    if (element) {
+      return element;
+    }
+  }
+
+  return null;
+}
+
+function ensureContextualActionButton({ id, container, context }) {
   let button = document.getElementById(id);
   if (!button) {
     button = document.createElement('button');
@@ -165,17 +188,7 @@ function ensureContextualActionButton({ id, container, context, referenceButton 
     button.setAttribute('aria-haspopup', 'menu');
     button.setAttribute('aria-expanded', 'false');
 
-    if (context === 'watch') {
-      if (referenceButton && referenceButton.className) {
-        button.className = referenceButton.className;
-      } else {
-        button.className =
-          'yt-spec-button-shape-next yt-spec-button-shape-next--outline yt-spec-button-shape-next--size-m';
-      }
-      button.classList.add('ytlm-action-button', 'ytlm-action-button--watch');
-    } else {
-      button.className = 'ytlm-action-button ytlm-action-button--shorts';
-    }
+    button.className = 'ytlm-action-button';
 
     const icon = document.createElement('span');
     icon.className = 'ytlm-button-icon';
@@ -185,18 +198,45 @@ function ensureContextualActionButton({ id, container, context, referenceButton 
     label.className = 'ytlm-button-label';
     label.textContent = BUTTON_LABELS.idle;
 
-    button.append(icon, label);
+    const caret = document.createElement('span');
+    caret.className = 'ytlm-button-caret';
+    caret.setAttribute('aria-hidden', 'true');
+
+    button.append(icon, label, caret);
     button.setAttribute('aria-label', BUTTON_LABELS.idle);
 
     container.appendChild(button);
   } else {
     button.dataset.ytlmContext = context;
+    button.classList.add('ytlm-action-button');
+  }
 
-    if (context === 'watch') {
-      button.classList.add('ytlm-action-button', 'ytlm-action-button--watch');
-    } else {
-      button.classList.add('ytlm-action-button', 'ytlm-action-button--shorts');
-    }
+  if (!button.querySelector('.ytlm-button-icon')) {
+    const icon = document.createElement('span');
+    icon.className = 'ytlm-button-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    button.prepend(icon);
+  }
+
+  if (!button.querySelector('.ytlm-button-label')) {
+    const label = document.createElement('span');
+    label.className = 'ytlm-button-label';
+    label.textContent = BUTTON_LABELS.idle;
+    button.appendChild(label);
+  }
+
+  if (!button.querySelector('.ytlm-button-caret')) {
+    const caret = document.createElement('span');
+    caret.className = 'ytlm-button-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    button.appendChild(caret);
+  }
+
+  button.classList.remove('ytlm-action-button--watch', 'ytlm-action-button--shorts');
+  if (context === 'watch') {
+    button.classList.add('ytlm-action-button--watch');
+  } else {
+    button.classList.add('ytlm-action-button--shorts');
   }
 
   if (!button.querySelector('.ytlm-button-icon')) {
@@ -630,47 +670,40 @@ function getVideoTitle() {
 function buildPrompt({ title, url, transcript, settings }) {
   const trimmedTranscript = transcript.trim();
   const safeTitle = title?.trim() || 'Untitled video';
-  const preferences = {
-    overview_sentence_count: sanitizeNumber(settings.overviewSentences, DEFAULT_SETTINGS.overviewSentences, 1, 10),
-    include_takeaways: Boolean(settings.includeTakeaways),
-    include_action_steps: Boolean(settings.includeActionSteps),
-    response_language: settings.responseLanguage?.trim() || DEFAULT_SETTINGS.responseLanguage
-  };
+  const overviewCount = sanitizeNumber(settings.overviewSentences, DEFAULT_SETTINGS.overviewSentences, 1, 10);
+  const includeTakeaways = Boolean(settings.includeTakeaways);
+  const includeActionSteps = Boolean(settings.includeActionSteps);
+  const responseLanguage = settings.responseLanguage?.trim() || DEFAULT_SETTINGS.responseLanguage;
 
-  const instructions = [`Provide a concise overview in ${preferences.overview_sentence_count} sentence(s).`];
-  if (preferences.include_takeaways) {
-    instructions.push('List the main takeaways as bullet points.');
+  const requestParts = [`Please give me a concise overview in ${overviewCount} sentence${overviewCount === 1 ? '' : 's'}.`];
+  if (includeTakeaways) {
+    requestParts.push('After that, add a bulleted list of the main takeaways.');
   }
-  if (preferences.include_action_steps) {
-    instructions.push('Highlight actionable steps separately.');
+  if (includeActionSteps) {
+    requestParts.push('Call out any actionable steps or recommendations in their own short section.');
   }
+  requestParts.push(`Write the entire response in ${responseLanguage}.`);
 
-  if (settings.customInstructions) {
-    const customLines = settings.customInstructions
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    instructions.push(...customLines);
-  }
+  const customLines = settings.customInstructions
+    ? settings.customInstructions
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+    : [];
 
-  const payload = {
-    task: 'summarize_youtube_video',
-    format: 'json',
-    metadata: {
-      generated_at: new Date().toISOString(),
-      source: 'youtube-transcript-summarizer-extension',
-      transcript_source: 'glasp'
-    },
-    preferences,
-    video: {
-      title: safeTitle,
-      url
-    },
-    instructions,
-    transcript: trimmedTranscript
-  };
+  const customBlock = customLines.length
+    ? `Additional preferences:\n${customLines.map((line) => `- ${line}`).join('\n')}`
+    : '';
 
-  return JSON.stringify(payload, null, 2);
+  const promptSections = [
+    'You are helping me summarize a YouTube video.',
+    `Title: "${safeTitle}"\nLink: ${url}`,
+    requestParts.join(' '),
+    customBlock,
+    `Use the transcript below as your source material:\n${trimmedTranscript}`
+  ].filter((section) => section && section.trim().length > 0);
+
+  return promptSections.join('\n\n');
 }
 
 async function fetchTranscript(videoUrl) {
@@ -727,23 +760,30 @@ function ensureGlobalStyles() {
   style.id = STYLE_ELEMENT_ID;
   style.textContent = `
     #${SHORTS_CONTAINER_ID} {
-      position: fixed;
-      top: 96px;
-      right: 16px;
       display: flex;
-      flex-direction: column;
-      gap: 12px;
-      z-index: 2147480000;
-      pointer-events: none;
-    }
-
-    #${SHORTS_CONTAINER_ID} .ytlm-action-button {
-      pointer-events: auto;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      flex: none;
     }
 
     .ytlm-action-button {
       position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
       font: inherit;
+      line-height: 1;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: none;
+      transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
     }
 
     .ytlm-action-button .ytlm-button-label {
@@ -760,6 +800,21 @@ function ensureGlobalStyles() {
       justify-content: center;
     }
 
+    .ytlm-action-button .ytlm-button-caret {
+      display: inline-block;
+      width: 0;
+      height: 0;
+      margin-left: 2px;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid currentColor;
+      transition: transform 0.18s ease;
+    }
+
+    .ytlm-action-button[aria-expanded='true'] .ytlm-button-caret {
+      transform: rotate(180deg);
+    }
+
     .ytlm-action-button:focus-visible {
       outline: 3px solid var(--yt-spec-brand-button-background, #065fd4);
       outline-offset: 2px;
@@ -767,47 +822,71 @@ function ensureGlobalStyles() {
 
     .ytlm-action-button--watch {
       margin-left: 8px;
+      min-height: 36px;
+      padding: 0 16px;
+      border-radius: 18px;
+      border: 1px solid var(--yt-spec-badge-chip-outline, rgba(0, 0, 0, 0.1));
+      background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, 0.04));
+      color: var(--yt-spec-text-primary, #0f0f0f);
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .ytlm-action-button--watch:hover:not(.ytlm-busy) {
+      background: var(--yt-spec-touch-response, rgba(0, 0, 0, 0.08));
+    }
+
+    .ytlm-action-button--watch:active {
+      background: var(--yt-spec-touch-response, rgba(0, 0, 0, 0.12));
     }
 
     .ytlm-action-button--watch .ytlm-button-icon {
       display: none;
     }
 
+    .ytlm-action-button--watch.ytlm-busy {
+      cursor: progress;
+    }
+
     .ytlm-action-button--watch.ytlm-busy .ytlm-button-label {
-      opacity: 0.8;
+      opacity: 0.75;
+    }
+
+    .ytlm-action-button--watch.ytlm-busy .ytlm-button-caret {
+      opacity: 0.6;
     }
 
     .ytlm-action-button--shorts {
-      width: 52px;
-      height: 52px;
+      width: 48px;
+      height: 48px;
       border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(15, 15, 15, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      background: rgba(15, 15, 15, 0.88);
       color: #ffffff;
       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-      transition: transform 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
     }
 
     .ytlm-action-button--shorts:hover:not(.ytlm-busy) {
       transform: translateY(-2px);
       box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
-      background: rgba(15, 15, 15, 0.95);
+      background: rgba(15, 15, 15, 0.94);
     }
 
     .ytlm-action-button--shorts:active {
       transform: translateY(0);
     }
 
-    .ytlm-action-button--shorts .ytlm-button-label {
+    .ytlm-action-button--shorts .ytlm-button-label,
+    .ytlm-action-button--shorts .ytlm-button-caret {
       display: none;
     }
 
     .ytlm-action-button--shorts .ytlm-button-icon {
-      width: 26px;
-      height: 26px;
+      width: 24px;
+      height: 24px;
       background-repeat: no-repeat;
       background-position: center;
-      background-size: 24px 24px;
+      background-size: 22px 22px;
       background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.75a5.25 5.25 0 0 1 4.72 7.72A5.25 5.25 0 0 1 19 14.25 5.25 5.25 0 0 1 8.53 18.7 5.25 5.25 0 0 1 5 13.75a5.25 5.25 0 0 1 2.54-9.48"/><path d="M8.2 7.4 12 9.5l3.8-2.1"/><path d="M8.2 16.6v-4.2l-3.2-1.8"/><path d="M15.8 16.6v-4.2l3.2-1.8"/></svg>');
     }
 
@@ -820,6 +899,8 @@ function ensureGlobalStyles() {
       border-radius: 50%;
       border: 3px solid rgba(255, 255, 255, 0.35);
       border-top-color: rgba(255, 255, 255, 0.95);
+      width: 24px;
+      height: 24px;
       animation: ytlm-spin 1s linear infinite;
     }
 
