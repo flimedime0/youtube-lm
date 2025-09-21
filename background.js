@@ -288,7 +288,6 @@ function decodeHtmlEntities(text) {
 
   let decoded = text;
 
-  decoded = decoded.replace(/&amp;/gi, '&');
   decoded = decoded.replace(/&#(\d+);/gi, (match, value) => {
     const codePoint = Number.parseInt(value, 10);
     return codePoint === 38 ? '&' : match;
@@ -297,6 +296,7 @@ function decodeHtmlEntities(text) {
     const codePoint = Number.parseInt(value, 16);
     return codePoint === 0x26 ? '&' : match;
   });
+  decoded = decoded.replace(/&amp;/gi, '&');
   decoded = decoded.replace(/&lt;/gi, '<');
   decoded = decoded.replace(/&gt;/gi, '>');
 
@@ -329,7 +329,9 @@ function decodeHtmlEntities(text) {
     '<div>Please&nbsp;Sign&nbsp;In</div>',
     '<div>Please&amp;nbsp;Sign&amp;nbsp;In</div>',
     '<div>Please&#38;nbsp;Sign&#38;nbsp;In</div>',
-    '<div>Please&#x26;nbsp;Sign&#x26;nbsp;In</div>'
+    '<div>Please&#x26;nbsp;Sign&#x26;nbsp;In</div>',
+    '<div>Please&#x26;amp;nbsp;Sign</div>',
+    '<div>Please&#38;amp;nbsp;Sign</div>'
   ];
 
   for (const sample of samples) {
