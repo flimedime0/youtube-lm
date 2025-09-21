@@ -29,7 +29,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'openChatGPT' && typeof message.prompt === 'string') {
     (async () => {
       try {
-        const response = await openChatGPTTab(message.prompt, message.preferredHost);
+        const response = await openChatGPTTab(message.prompt, message.preferredHost, message.autoSend);
         sendResponse(response);
       } catch (error) {
         console.error('Failed to open ChatGPT tab:', error);
@@ -126,7 +126,8 @@ async function fetchTranscriptFromGlasp(videoUrl) {
   try {
     await waitForTabComplete(tabId, GLASP_READER_LOAD_TIMEOUT_MS);
     const pageText = await getTabInnerText(tabId);
-    const transcript = parseTranscriptFromReaderText(pageText);
+    const parsedTranscript = parseTranscriptFromReaderText(pageText);
+    const transcript = await ensureTranscriptHasTimestamps(parsedTranscript, videoUrl);
     await cleanup();
     return transcript;
   } catch (error) {
@@ -135,7 +136,7 @@ async function fetchTranscriptFromGlasp(videoUrl) {
   }
 }
 
-async function openChatGPTTab(prompt, preferredHost) {
+async function openChatGPTTab(prompt, preferredHost, autoSend) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
     throw new Error('Invalid prompt supplied.');
   }
@@ -148,7 +149,8 @@ async function openChatGPTTab(prompt, preferredHost) {
     throw new Error('Failed to open ChatGPT tab.');
   }
 
-  await setPendingPrompt(tab.id, { prompt, attempts: 0, host });
+  const shouldAutoSend = autoSend !== false;
+  await setPendingPrompt(tab.id, { prompt, attempts: 0, host, autoSend: shouldAutoSend });
   scheduleInjectionAttempt(tab.id, 1500);
   return { status: 'opening', tabId: tab.id };
 }
@@ -189,7 +191,7 @@ async function attemptPromptInjection(tabId) {
       target: { tabId },
       world: 'MAIN',
       func: injectPromptAndSend,
-      args: [pending.prompt]
+      args: [pending.prompt, pending.autoSend !== false]
     });
 
     const status = result?.status || (result === true ? 'success' : 'retry');
@@ -278,66 +280,230 @@ function parseTranscriptFromReaderText(pageText) {
     throw new Error('Please sign in to Glasp in this browser to access transcripts.');
   }
 
-  const lines = pageText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const sanitized = pageText.replace(/\r/g, '\n').replace(/\u00a0/g, ' ');
+  const truncated = truncateMarketingContent(sanitized);
+  const transcriptSection = extractTranscriptSection(truncated).trim();
 
-  const transcriptStart = lines.findIndex((line) => /^Transcript$/i.test(line) || /Transcript:?$/i.test(line));
-  const contentLines = transcriptStart >= 0 ? lines.slice(transcriptStart + 1) : lines;
-
-  const stopPattern = /^(Summary|Highlights|Notes?|Comments|Write a comment|Related)/i;
-  const timestampInline = /^(?:\[\s*)?((?:\d{1,2}:)?\d{1,2}:\d{2})(?:\s*\]?)(?:\s*[-–:\u2013]\s*|\s+)(.+)$/;
-  const timestampSolo = /^(?:\[\s*)?((?:\d{1,2}:)?\d{1,2}:\d{2})(?:\s*\]?)(?:\s*[-–:\u2013]\s*)?$/;
-
-  const segments = [];
-  let index = 0;
-
-  while (index < contentLines.length) {
-    const line = contentLines[index];
-    if (stopPattern.test(line)) {
-      break;
-    }
-
-    const inlineMatch = line.match(timestampInline);
-    if (inlineMatch) {
-      const [, timestamp, text] = inlineMatch;
-      segments.push(formatTranscriptSegment(timestamp, text));
-      index += 1;
-      continue;
-    }
-
-    const soloMatch = line.match(timestampSolo);
-    if (soloMatch) {
-      const [, timestamp] = soloMatch;
-      index += 1;
-      const textParts = [];
-      while (index < contentLines.length) {
-        const nextLine = contentLines[index];
-        if (stopPattern.test(nextLine) || timestampSolo.test(nextLine) || timestampInline.test(nextLine)) {
-          break;
-        }
-        textParts.push(nextLine);
-        index += 1;
-      }
-      if (textParts.length > 0) {
-        segments.push(formatTranscriptSegment(timestamp, textParts.join(' ')));
-      }
-      continue;
-    }
-
-    index += 1;
+  if (!transcriptSection) {
+    throw new Error('Transcript data not found on Glasp for this video.');
   }
 
-  if (segments.length === 0) {
-    const fallbackTranscript = contentLines.join('\n').trim();
-    if (!fallbackTranscript) {
-      throw new Error('Transcript data not found on Glasp for this video.');
+  const segments = extractSegmentsFromPlainText(transcriptSection);
+  if (segments.length > 0) {
+    return segments.join('\n');
+  }
+
+  const marketingPattern = /(Share This Page|Get YouTube Video Transcript|Download browser extensions|Apps & Extensions|Key Features|More Features|APIs|Blog|Company|About us|Community|FAQs|Job Board|Newsletter|Pricing|Terms|Privacy|Guidelines|Glasp Inc\.)/i;
+  const headerPattern = /^(?:Summarize\s+)?Transcript(?:\s*English\s*\(auto-generated\))?$/i;
+
+  const fallbackLines = transcriptSection
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !marketingPattern.test(line) && !headerPattern.test(line) && !/^English\s*\(auto-generated\)$/i.test(line));
+
+  const fallbackTranscript = fallbackLines.join('\n').trim();
+  if (!fallbackTranscript) {
+    throw new Error('Transcript data not found on Glasp for this video.');
+  }
+
+  return fallbackTranscript;
+}
+
+function truncateMarketingContent(text) {
+  const marketingPattern = /(Share This Page|Get YouTube Video Transcript|Download browser extensions|Apps & Extensions|Key Features|More Features|Glasp Reader|Kindle Highlight Export|Idea Hatch|Integrations|Obsidian Plugin|Notion Integration|Pocket Integration|Instapaper Integration|Medium Integration|Readwise Integration|Snipd Integration|Hypothesis Integration|APIs|Blog & Post|Embed Links|Image Highlight|Personality Test|Quote Shots|Company|About us|Blog|Community|FAQs|Job Board|Newsletter|Pricing|Terms|Privacy|Guidelines|©\s*\d{4}\s+Glasp)/i;
+  const match = marketingPattern.exec(text);
+  if (match) {
+    return text.slice(0, match.index);
+  }
+  return text;
+}
+
+function extractTranscriptSection(text) {
+  if (!text) {
+    return '';
+  }
+
+  const timestampPattern = /((?:\d{1,2}:)?\d{1,2}:\d{2})/;
+  const headerPattern = /(?:Summarize\s+)?Transcript(?:\s*English\s*\(auto-generated\))?/i;
+
+  const timestampMatch = timestampPattern.exec(text);
+  if (timestampMatch) {
+    return text.slice(timestampMatch.index);
+  }
+
+  const headerMatch = headerPattern.exec(text);
+  let working = headerMatch ? text.slice(headerMatch.index + headerMatch[0].length) : text;
+
+  working = working.replace(/Summarize\s+Transcript/gi, ' ');
+  working = working.replace(/Transcript:?/gi, ' ');
+  working = working.replace(/English\s*\(auto-generated\)/gi, ' ');
+  working = working.replace(/Language\s*:?.*?English.*?(?:\n|$)/gi, ' ');
+
+  return working;
+}
+
+function extractSegmentsFromPlainText(text) {
+  const cleaned = truncateMarketingContent(text)
+    .replace(/Summarize\s+Transcript/gi, ' ')
+    .replace(/Transcript:?/gi, ' ')
+    .replace(/English\s*\(auto-generated\)/gi, ' ')
+    .replace(/Language\s*:?.*?English/gi, ' ');
+
+  const normalized = cleaned.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const timestampPattern = /((?:\d{1,2}:)?\d{1,2}:\d{2})(?:\s*[-–:\u2013]\s*|\s+)?/g;
+  const matches = [];
+  let match;
+  while ((match = timestampPattern.exec(normalized)) !== null) {
+    matches.push({ index: match.index, raw: match[0], timestamp: match[1] });
+  }
+
+  if (matches.length === 0) {
+    return [];
+  }
+
+  const segments = [];
+  for (let i = 0; i < matches.length; i += 1) {
+    const current = matches[i];
+    const next = matches[i + 1];
+    const start = current.index + current.raw.length;
+    const end = next ? next.index : normalized.length;
+    const segmentText = normalized.slice(start, end).trim();
+    if (!segmentText) {
+      continue;
     }
-    return fallbackTranscript;
+    segments.push(formatTranscriptSegment(current.timestamp, segmentText));
+  }
+
+  return segments;
+}
+
+async function ensureTranscriptHasTimestamps(transcript, videoUrl) {
+  if (transcriptHasTimestamps(transcript)) {
+    return transcript;
+  }
+
+  try {
+    const fallback = await fetchTranscriptFromYouTube(videoUrl);
+    if (fallback) {
+      return fallback;
+    }
+  } catch (error) {
+    console.warn('Timed transcript fallback failed', error);
+  }
+
+  return transcript;
+}
+
+function transcriptHasTimestamps(transcript) {
+  if (typeof transcript !== 'string') {
+    return false;
+  }
+  return /\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]/.test(transcript);
+}
+
+async function fetchTranscriptFromYouTube(videoUrl) {
+  const videoId = extractVideoIdFromUrl(videoUrl);
+  if (!videoId) {
+    throw new Error('Unable to determine video ID for transcript fallback.');
+  }
+
+  const paramVariants = ['lang=en&fmt=json3', 'lang=en&kind=asr&fmt=json3', 'lang=en-US&fmt=json3', 'lang=en-US&kind=asr&fmt=json3'];
+
+  for (const params of paramVariants) {
+    const requestUrl = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&${params}`;
+    try {
+      const response = await fetch(requestUrl, { credentials: 'include' });
+      if (!response.ok) {
+        continue;
+      }
+
+      const data = await response.json();
+      const formatted = parseTimedTextJson(data);
+      if (formatted) {
+        return formatted;
+      }
+    } catch (error) {
+      console.debug('Failed to fetch YouTube timed transcript with params', params, error);
+    }
+  }
+
+  throw new Error('Timed YouTube transcript unavailable.');
+}
+
+function extractVideoIdFromUrl(videoUrl) {
+  if (typeof videoUrl !== 'string') {
+    return null;
+  }
+
+  try {
+    const url = new URL(videoUrl);
+    if (url.hostname === 'youtu.be') {
+      return url.pathname.slice(1) || null;
+    }
+    if (url.searchParams.has('v')) {
+      return url.searchParams.get('v');
+    }
+    const shortsMatch = url.pathname.match(/\/shorts\/([\w-]{11})/);
+    if (shortsMatch) {
+      return shortsMatch[1];
+    }
+  } catch (error) {
+    return null;
+  }
+
+  const fallbackMatch = videoUrl.match(/(?:v=|\/)([\w-]{11})(?:[&?/]|$)/);
+  if (fallbackMatch) {
+    return fallbackMatch[1];
+  }
+
+  return null;
+}
+
+function parseTimedTextJson(json) {
+  if (!json || !Array.isArray(json.events)) {
+    return '';
+  }
+
+  const segments = [];
+  for (const event of json.events) {
+    if (!event || !Array.isArray(event.segs) || event.segs.length === 0) {
+      continue;
+    }
+
+    const text = event.segs
+      .map((segment) => (typeof segment?.utf8 === 'string' ? segment.utf8 : ''))
+      .join('')
+      .replace(/\s+/g, ' ')
+      .replace(/\s*\n\s*/g, ' ')
+      .trim();
+
+    if (!text) {
+      continue;
+    }
+
+    const timestamp = formatMillisecondsToTimestamp(event.tStartMs ?? 0);
+    segments.push(`[${timestamp}] ${text}`);
   }
 
   return segments.join('\n');
+}
+
+function formatMillisecondsToTimestamp(ms) {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const mm = String(minutes).padStart(2, '0');
+  const ss = String(seconds).padStart(2, '0');
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${mm}:${ss}`;
+  }
+  return `${mm}:${ss}`;
 }
 
 function formatTranscriptSegment(timestamp, text) {
@@ -429,7 +595,8 @@ async function ensurePendingPromptsLoaded() {
             restored.set(numericKey, {
               prompt: value.prompt,
               attempts: Number.isFinite(value.attempts) ? value.attempts : 0,
-              host: typeof value.host === 'string' ? value.host : undefined
+              host: typeof value.host === 'string' ? value.host : undefined,
+              autoSend: value.autoSend !== false
             });
           }
         }
@@ -458,7 +625,8 @@ async function persistPendingPrompts() {
     serialized[String(tabId)] = {
       prompt: value.prompt,
       attempts: value.attempts ?? 0,
-      host: value.host
+      host: value.host,
+      autoSend: value.autoSend !== false
     };
   }
 
@@ -467,7 +635,7 @@ async function persistPendingPrompts() {
 
 async function setPendingPrompt(tabId, data) {
   await ensurePendingPromptsLoaded();
-  pendingPrompts.set(tabId, { ...data, attempts: data.attempts ?? 0 });
+  pendingPrompts.set(tabId, { ...data, attempts: data.attempts ?? 0, autoSend: data.autoSend !== false });
   await persistPendingPrompts();
 }
 
@@ -480,10 +648,12 @@ async function removePendingPrompt(tabId) {
   await persistPendingPrompts();
 }
 
-function injectPromptAndSend(prompt) {
+function injectPromptAndSend(prompt, autoSend = true) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
     return { status: 'permanent-failure', reason: 'Invalid prompt provided.' };
   }
+
+  const shouldAutoSend = autoSend !== false;
 
   const preferredSelectors = [
     'textarea#prompt-textarea',
@@ -501,6 +671,12 @@ function injectPromptAndSend(prompt) {
 
   if (!applyPromptToComposer(composer, prompt)) {
     return { status: 'permanent-failure', reason: 'Unable to write prompt into composer.' };
+  }
+
+  if (!shouldAutoSend) {
+    focusComposer(composer);
+    placeCaretAtEnd(composer);
+    return { status: 'success', mode: 'manual' };
   }
 
   if (!sendMessage(composer)) {
@@ -598,12 +774,7 @@ function injectPromptAndSend(prompt) {
       return isVisible(element);
     }
 
-    if (element.isContentEditable) {
-      return isVisible(element);
-    }
-
-    const role = element.getAttribute('role');
-    if (role && role.toLowerCase() === 'textbox') {
+    if (isContentEditableElement(element)) {
       return isVisible(element);
     }
 
@@ -625,30 +796,65 @@ function injectPromptAndSend(prompt) {
   }
 
   function applyPromptToComposer(element, value) {
-    try {
-      element.focus({ preventScroll: false });
-    } catch (error) {
-      element.focus();
-    }
+    focusComposer(element);
 
     if ('value' in element) {
       setNativeValue(element, value);
       dispatchInputEvents(element, value);
       element.scrollTop = element.scrollHeight;
+      placeCaretAtEnd(element);
       return true;
     }
 
-    if (element.isContentEditable || element.getAttribute('contenteditable') === 'true' || element.getAttribute('role') === 'textbox') {
+    if (isContentEditableElement(element)) {
       clearEditableContent(element);
       const success = document.execCommand('insertText', false, value);
       if (!success || element.innerText.trim() !== value.trim()) {
         element.innerText = value;
       }
       dispatchInputEvents(element, value);
+      element.scrollTop = element.scrollHeight;
+      placeCaretAtEnd(element);
       return true;
     }
 
     return false;
+  }
+
+  function focusComposer(element) {
+    if (!element || typeof element.focus !== 'function') {
+      return;
+    }
+    try {
+      element.focus({ preventScroll: false });
+    } catch (error) {
+      element.focus();
+    }
+  }
+
+  function placeCaretAtEnd(element) {
+    if (!element) {
+      return;
+    }
+
+    if (typeof element.selectionStart === 'number' && typeof element.selectionEnd === 'number') {
+      const length = element.value?.length ?? 0;
+      element.selectionStart = length;
+      element.selectionEnd = length;
+      return;
+    }
+
+    if (isContentEditableElement(element)) {
+      const selection = window.getSelection();
+      if (!selection) {
+        return;
+      }
+      selection.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.collapse(false);
+      selection.addRange(range);
+    }
   }
 
   function clearEditableContent(element) {
@@ -702,20 +908,47 @@ function injectPromptAndSend(prompt) {
   function sendMessage(element) {
     const sendButton = findSendButton(element);
     if (sendButton) {
+      if (!isSendButtonEnabled(sendButton)) {
+        return false;
+      }
       sendButton.click();
+      clearComposer(element);
       return true;
     }
 
+    if (!simulateEnterKey(element)) {
+      return false;
+    }
+
+    clearComposer(element);
+    return true;
+  }
+
+  function simulateEnterKey(element) {
     try {
-      element.focus();
+      focusComposer(element);
       const keyDown = new KeyboardEvent('keydown', {
         key: 'Enter',
         code: 'Enter',
         keyCode: 13,
         which: 13,
-        bubbles: true
+        bubbles: true,
+        cancelable: true
       });
-      element.dispatchEvent(keyDown);
+      const accepted = element.dispatchEvent(keyDown);
+      if (!accepted) {
+        return false;
+      }
+
+      const keyPress = new KeyboardEvent('keypress', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      });
+      element.dispatchEvent(keyPress);
 
       const keyUp = new KeyboardEvent('keyup', {
         key: 'Enter',
@@ -729,6 +962,24 @@ function injectPromptAndSend(prompt) {
     } catch (error) {
       console.warn('Failed to simulate Enter key press', error);
       return false;
+    }
+  }
+
+  function clearComposer(element) {
+    if (!element) {
+      return;
+    }
+
+    if ('value' in element) {
+      setNativeValue(element, '');
+      dispatchInputEvents(element, '');
+      return;
+    }
+
+    if (isContentEditableElement(element)) {
+      element.innerHTML = '';
+      dispatchInputEvents(element, '');
+      placeCaretAtEnd(element);
     }
   }
 
@@ -757,6 +1008,55 @@ function injectPromptAndSend(prompt) {
 
     candidates.sort((a, b) => a.distance - b.distance);
     return candidates[0].node;
+  }
+
+  function isSendButtonEnabled(button) {
+    if (!(button instanceof HTMLElement)) {
+      return false;
+    }
+
+    if (button.disabled) {
+      return false;
+    }
+
+    const ariaDisabled = button.getAttribute('aria-disabled');
+    if (ariaDisabled && ariaDisabled.toLowerCase() === 'true') {
+      return false;
+    }
+
+    const dataDisabled = button.getAttribute('data-disabled') || button.dataset?.disabled;
+    if (typeof dataDisabled === 'string' && dataDisabled.toLowerCase() === 'true') {
+      return false;
+    }
+
+    try {
+      const style = window.getComputedStyle(button);
+      if (style.pointerEvents === 'none') {
+        return false;
+      }
+      if (style.opacity && Number.parseFloat(style.opacity) < 0.2) {
+        return false;
+      }
+    } catch (error) {
+      // Ignore style lookup errors.
+    }
+
+    return true;
+  }
+
+  function isContentEditableElement(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+    if (element.isContentEditable) {
+      return true;
+    }
+    const contentEditable = element.getAttribute('contenteditable');
+    if (contentEditable && contentEditable.toLowerCase() === 'true') {
+      return true;
+    }
+    const role = element.getAttribute('role');
+    return Boolean(role && role.toLowerCase() === 'textbox');
   }
 
   function isPotentialSendButton(element) {
