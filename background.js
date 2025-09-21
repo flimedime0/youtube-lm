@@ -267,6 +267,82 @@ async function getTabInnerText(tabId) {
   }
 }
 
+const GLASP_MARKETING_LINES = [
+  'Share This Page',
+  'Get YouTube Video Transcript',
+  'Download browser extensions',
+  'Apps & Extensions',
+  'Key Features',
+  'More Features',
+  'Glasp Reader',
+  'Kindle Highlight Export',
+  'Idea Hatch',
+  'Integrations',
+  'Obsidian Plugin',
+  'Notion Integration',
+  'Pocket Integration',
+  'Instapaper Integration',
+  'Medium Integration',
+  'Readwise Integration',
+  'Snipd Integration',
+  'Hypothesis Integration',
+  'APIs',
+  'Blog & Post',
+  'Embed Links',
+  'Image Highlight',
+  'Personality Test',
+  'Quote Shots',
+  'Company',
+  'About us',
+  'Blog',
+  'Community',
+  'FAQs',
+  'Job Board',
+  'Newsletter',
+  'Pricing',
+  'Terms',
+  'Privacy',
+  'Guidelines'
+];
+
+const GLASP_MARKETING_LINE_SET = new Set(
+  GLASP_MARKETING_LINES.map((value) => value.trim().toLowerCase())
+);
+
+const GLASP_STRONG_MARKETING_PATTERNS = [
+  /^©\s*\d{4}\s+glasp/i,
+  /\bglasp\s+inc\./i
+];
+
+function normalizeMarketingLine(line) {
+  return line.trim().toLowerCase().replace(/[|:]+$/g, '').trim();
+}
+
+function isStrongMarketingLine(line) {
+  const trimmed = typeof line === 'string' ? line.trim() : '';
+  if (!trimmed) {
+    return false;
+  }
+  return GLASP_STRONG_MARKETING_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function isMarketingFooterLine(line) {
+  if (typeof line !== 'string') {
+    return false;
+  }
+
+  const normalized = normalizeMarketingLine(line);
+  if (!normalized) {
+    return false;
+  }
+
+  if (GLASP_MARKETING_LINE_SET.has(normalized)) {
+    return true;
+  }
+
+  return isStrongMarketingLine(line);
+}
+
 function parseTranscriptFromReaderText(pageText) {
   if (typeof pageText !== 'string' || pageText.trim().length === 0) {
     throw new Error('Empty response received from Glasp.');
@@ -293,13 +369,18 @@ function parseTranscriptFromReaderText(pageText) {
     return segments.join('\n');
   }
 
-  const marketingPattern = /(Share This Page|Get YouTube Video Transcript|Download browser extensions|Apps & Extensions|Key Features|More Features|APIs|Blog|Company|About us|Community|FAQs|Job Board|Newsletter|Pricing|Terms|Privacy|Guidelines|Glasp Inc\.)/i;
   const headerPattern = /^(?:Summarize\s+)?Transcript(?:\s*English\s*\(auto-generated\))?$/i;
 
   const fallbackLines = transcriptSection
     .split(/\n+/)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !marketingPattern.test(line) && !headerPattern.test(line) && !/^English\s*\(auto-generated\)$/i.test(line));
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !isMarketingFooterLine(line) &&
+        !headerPattern.test(line) &&
+        !/^English\s*\(auto-generated\)$/i.test(line)
+    );
 
   const fallbackTranscript = fallbackLines.join('\n').trim();
   if (!fallbackTranscript) {
@@ -310,11 +391,39 @@ function parseTranscriptFromReaderText(pageText) {
 }
 
 function truncateMarketingContent(text) {
-  const marketingPattern = /(Share This Page|Get YouTube Video Transcript|Download browser extensions|Apps & Extensions|Key Features|More Features|Glasp Reader|Kindle Highlight Export|Idea Hatch|Integrations|Obsidian Plugin|Notion Integration|Pocket Integration|Instapaper Integration|Medium Integration|Readwise Integration|Snipd Integration|Hypothesis Integration|APIs|Blog & Post|Embed Links|Image Highlight|Personality Test|Quote Shots|Company|About us|Blog|Community|FAQs|Job Board|Newsletter|Pricing|Terms|Privacy|Guidelines|©\s*\d{4}\s+Glasp)/i;
-  const match = marketingPattern.exec(text);
-  if (match) {
-    return text.slice(0, match.index);
+  if (!text) {
+    return text;
   }
+
+  const lines = text.split('\n');
+  const lineStartIndices = [];
+  let offset = 0;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    lineStartIndices.push(offset);
+    offset += lines[index].length + 1;
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!isMarketingFooterLine(line)) {
+      continue;
+    }
+
+    const remaining = lines.slice(index);
+    const marketingCount = remaining.reduce(
+      (count, candidate) => count + (isMarketingFooterLine(candidate) ? 1 : 0),
+      0
+    );
+
+    if (!isStrongMarketingLine(line) && marketingCount < 2) {
+      continue;
+    }
+
+    const cutIndex = lineStartIndices[index];
+    return text.slice(0, cutIndex).trimEnd();
+  }
+
   return text;
 }
 
@@ -648,7 +757,7 @@ async function removePendingPrompt(tabId) {
   await persistPendingPrompts();
 }
 
-function injectPromptAndSend(prompt, autoSend = true) {
+async function injectPromptAndSend(prompt, autoSend = true) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
     return { status: 'permanent-failure', reason: 'Invalid prompt provided.' };
   }
@@ -679,11 +788,14 @@ function injectPromptAndSend(prompt, autoSend = true) {
     return { status: 'success', mode: 'manual' };
   }
 
-  if (!sendMessage(composer)) {
-    return { status: 'retry', reason: 'Send button not ready.' };
+  const sendSucceeded = await attemptAutoSend(composer, 5, 200);
+  if (sendSucceeded) {
+    return { status: 'success' };
   }
 
-  return { status: 'success' };
+  focusComposer(composer);
+  placeCaretAtEnd(composer);
+  return { status: 'retry', reason: 'Send button not ready.' };
 
   function findEditor(selectors) {
     for (const selector of selectors) {
@@ -1103,5 +1215,22 @@ function injectPromptAndSend(prompt, autoSend = true) {
     } catch (error) {
       return Number.MAX_SAFE_INTEGER;
     }
+  }
+
+  async function attemptAutoSend(element, attempts, delayMs) {
+    const maxAttempts = Math.max(1, attempts);
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (sendMessage(element)) {
+        return true;
+      }
+      if (attempt < maxAttempts - 1) {
+        await wait(delayMs);
+      }
+    }
+    return false;
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
   }
 }
