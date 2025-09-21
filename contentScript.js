@@ -36,10 +36,27 @@ addOrUpdateButtons();
 
 const observer = new MutationObserver((mutations) => {
   for (const mutation of mutations) {
-    if (mutation.type === 'childList' && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
-      scheduleButtonUpdate();
-      break;
+    if (mutation.type !== 'childList') {
+      continue;
     }
+
+    if (isExtensionOwnedNode(mutation.target)) {
+      continue;
+    }
+
+    const hasRelevantAddition = Array.from(mutation.addedNodes).some(
+      (node) => !isExtensionOwnedNode(node)
+    );
+    const hasRelevantRemoval = Array.from(mutation.removedNodes).some(
+      (node) => !isExtensionOwnedNode(node)
+    );
+
+    if (!hasRelevantAddition && !hasRelevantRemoval) {
+      continue;
+    }
+
+    scheduleButtonUpdate();
+    break;
   }
 });
 
@@ -85,6 +102,43 @@ function scheduleButtonUpdate() {
   } else {
     setTimeout(runUpdate, 50);
   }
+}
+
+function isExtensionOwnedNode(node) {
+  if (!node) {
+    return false;
+  }
+
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const element = node;
+
+    if (typeof element.id === 'string' && element.id.startsWith('ytlm-')) {
+      return true;
+    }
+
+    if (element.classList) {
+      for (const className of element.classList) {
+        if (className.startsWith('ytlm-')) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+    return Array.from(node.childNodes).every((child) => isExtensionOwnedNode(child));
+  }
+
+  if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.COMMENT_NODE) {
+    const parentElement = node.parentElement;
+    if (parentElement) {
+      return isExtensionOwnedNode(parentElement);
+    }
+  }
+
+  return false;
 }
 
 function ensureWatchButtons() {
@@ -204,6 +258,7 @@ function ensureContextualActionButton({ id, container, context }) {
 
     button.append(icon, label, caret);
     button.setAttribute('aria-label', BUTTON_LABELS.idle);
+    button.title = BUTTON_LABELS.idle;
 
     container.appendChild(button);
   } else {
@@ -570,6 +625,7 @@ function setButtonState(button, state) {
   }
 
   button.setAttribute('aria-label', label);
+  button.title = label;
 
   const menuId = button.getAttribute('aria-controls');
   if (menuId) {
