@@ -54,51 +54,53 @@ let tooltipShowTimeout = null;
 let tooltipHideTimeout = null;
 let tooltipDismissListenersAttached = false;
 
-ensureGlobalStyles();
-ensureSettingsLoaded().catch((error) => console.error('Failed to pre-load settings', error));
-addOrUpdateButtons();
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && typeof MutationObserver !== 'undefined') {
+  ensureGlobalStyles();
+  ensureSettingsLoaded().catch((error) => console.error('Failed to pre-load settings', error));
+  addOrUpdateButtons();
 
-const observer = new MutationObserver((mutations) => {
-  for (const mutation of mutations) {
-    if (mutation.type !== 'childList') {
-      continue;
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      if (mutation.type !== 'childList') {
+        continue;
+      }
+
+      if (isExtensionOwnedNode(mutation.target)) {
+        continue;
+      }
+
+      const hasRelevantAddition = Array.from(mutation.addedNodes).some(
+        (node) => !isExtensionOwnedNode(node)
+      );
+      const hasRelevantRemoval = Array.from(mutation.removedNodes).some(
+        (node) => !isExtensionOwnedNode(node)
+      );
+
+      if (!hasRelevantAddition && !hasRelevantRemoval) {
+        continue;
+      }
+
+      scheduleButtonUpdate();
+      break;
     }
+  });
 
-    if (isExtensionOwnedNode(mutation.target)) {
-      continue;
-    }
-
-    const hasRelevantAddition = Array.from(mutation.addedNodes).some(
-      (node) => !isExtensionOwnedNode(node)
-    );
-    const hasRelevantRemoval = Array.from(mutation.removedNodes).some(
-      (node) => !isExtensionOwnedNode(node)
-    );
-
-    if (!hasRelevantAddition && !hasRelevantRemoval) {
-      continue;
-    }
-
-    scheduleButtonUpdate();
-    break;
-  }
-});
-
-if (document.body) {
-  observer.observe(document.body, { childList: true, subtree: true });
-} else {
-  document.addEventListener('DOMContentLoaded', () => {
+  if (document.body) {
     observer.observe(document.body, { childList: true, subtree: true });
+  } else {
+    document.addEventListener('DOMContentLoaded', () => {
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+  }
+
+  window.addEventListener('yt-navigate-finish', () => {
+    hideTooltip(true);
+    setTimeout(() => {
+      addOrUpdateButtons();
+      resetButtonStates();
+    }, 600);
   });
 }
-
-window.addEventListener('yt-navigate-finish', () => {
-  hideTooltip(true);
-  setTimeout(() => {
-    addOrUpdateButtons();
-    resetButtonStates();
-  }, 600);
-});
 
 function addOrUpdateButtons() {
   closeActiveMenu();
@@ -1274,13 +1276,84 @@ function sanitizeTranscriptForPrompt(transcript) {
     return '';
   }
 
-  let cleaned = transcript.trim();
-  if (!cleaned) {
+  const normalizedText = transcript
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u2028\u2029]/g, '\n');
+
+  const lines = normalizedText
+    .split('\n')
+    .map((line) => line.replace(/\u00a0/g, ' ').trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
     return '';
   }
 
-  cleaned = cleaned.replace(/^(?:Products\s*Discover\s*About\s*)+/i, '').trim();
-  return cleaned;
+  const marketingPrefixes = [
+    /^(?:&\s*)?summary\b/i,
+    /^share\s+video\b/i,
+    /^copy\b/i
+  ];
+  const marketingExactMatches = new Set([
+    'summary',
+    'share video',
+    'copy',
+    'transcript',
+    'highlight',
+    'highlights',
+    'my highlights',
+    'note',
+    'notes',
+    'my notes'
+  ]);
+  const isDownloadHeader = (headerKey) =>
+    headerKey.startsWith('download ') && /(?:\.srt\b|\btranscript\b|\.txt\b|\btext\b)/.test(headerKey);
+
+  const normalizeForComparison = (value) =>
+    value
+      .toLowerCase()
+      .replace(/[\s\u00a0]+/g, ' ')
+      .replace(/^[\s\p{P}\p{S}]+/gu, '')
+      .replace(/[\s\p{P}\p{S}]+$/gu, '')
+      .trim();
+
+  let startIndex = 0;
+  while (startIndex < lines.length) {
+    const line = lines[startIndex];
+    const compactLine = line.replace(/[\s\u00a0]+/g, ' ');
+    const headerCandidate = compactLine.replace(/^[\s&•*·\-–—]+/u, '');
+    const headerKey = normalizeForComparison(headerCandidate);
+    const comparisonKey = normalizeForComparison(line);
+
+    let duplicateCount = 1;
+    while (
+      startIndex + duplicateCount < lines.length &&
+      comparisonKey &&
+      comparisonKey === normalizeForComparison(lines[startIndex + duplicateCount])
+    ) {
+      duplicateCount += 1;
+    }
+
+    if (duplicateCount > 1) {
+      startIndex += duplicateCount;
+      continue;
+    }
+
+    const isMarketingLine =
+      !comparisonKey ||
+      marketingPrefixes.some((pattern) => pattern.test(headerCandidate)) ||
+      (headerKey && (marketingExactMatches.has(headerKey) || isDownloadHeader(headerKey)));
+    if (isMarketingLine) {
+      startIndex += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  const sanitizedLines = lines.slice(startIndex);
+  const sanitizedText = sanitizedLines.join('\n').trim();
+  return sanitizedText;
 }
 
 function buildPromptPreview(settings) {
@@ -2343,4 +2416,10 @@ function setStatusMessage(statusElement, message, isError) {
   } else {
     statusElement.classList.remove('ytlm-error');
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    sanitizeTranscriptForPrompt
+  };
 }
