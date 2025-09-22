@@ -105,3 +105,14 @@ test('sanitizeTranscriptForPrompt preserves zero-width characters in body conten
 
   assert.strictEqual(sanitized, `${bodyLineOne}\n${bodyLineTwo}`);
 });
+
+test('sanitizeTranscriptForPrompt keeps regular sentences with marketing keywords intact', () => {
+  const rawTranscript = [
+    'Daniel: Download the dataset and copy the results later.',
+    'Sarah: Sounds good.'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.strictEqual(sanitized, rawTranscript);
+});

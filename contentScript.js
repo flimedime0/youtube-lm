@@ -1287,19 +1287,109 @@ function sanitizeTranscriptForPrompt(transcript) {
   const optionalWhitespaceOrZeroWidthPattern = `(?:\\s|[${zeroWidthCharacters}])*`;
   const markerBoundaryLookahead = `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|[A-Z]))`;
   const markerContinuationLookahead = `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|Copy|Share|Download))`;
-
+  
   const shareMarkerCorePattern = `Share${zeroWidthOptionalPattern}${whitespaceOrZeroWidthPattern}Video${markerBoundaryLookahead}`;
   const downloadMarkerCorePattern =
     `Download${zeroWidthOptionalPattern}${optionalWhitespaceOrZeroWidthPattern}(?:\\.[^\\s${zeroWidthCharacters}]+?${markerContinuationLookahead}|[A-Za-z]+?${markerContinuationLookahead})`;
   const copyMarkerCorePattern = `Copy${markerBoundaryLookahead}`;
   const marketingMarkerPattern = `(?:${shareMarkerCorePattern}|${downloadMarkerCorePattern}|${copyMarkerCorePattern})`;
+  const markerSeparatorCharacters =
+    `\\s\\u00a0${zeroWidthCharacters}&•*·\\-–—|/\\\\.,;:?!()\\[\\]"'`;
+  const markerSeparatorPattern = new RegExp(`^[${markerSeparatorCharacters}]*$`);
+  const headerPrefixIndicatorKeywords = [
+    'summary',
+    'highlights',
+    'highlight',
+    'notes',
+    'note',
+    'transcript',
+    'chapter',
+    'chapters',
+    'title',
+    'creator',
+    'channel',
+    'uploaded',
+    'views',
+    'overview',
+    'introduction',
+    'intro',
+    'episode',
+    'lesson',
+    'part'
+  ];
+  const shouldIsolateMarker = (markerText) => {
+    if (typeof markerText !== 'string' || markerText.length === 0) {
+      return false;
+    }
+
+    const normalizedMarker = stripZeroWidth(markerText)
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!normalizedMarker) {
+      return false;
+    }
+
+    if (normalizedMarker.startsWith('download ')) {
+      const trailingWord = normalizedMarker.slice('download '.length).trim();
+      if (/^(?:the|this|that|these|those|my|your|our|his|her|their|a|an)$/i.test(trailingWord)) {
+        return false;
+      }
+    }
+
+    return true;
+  };
 
   const firstLineBreakIndex = normalizedText.indexOf('\n');
   const firstLine =
     firstLineBreakIndex === -1 ? normalizedText : normalizedText.slice(0, firstLineBreakIndex);
   const firstLineMatches = [...firstLine.matchAll(new RegExp(marketingMarkerPattern, 'g'))];
+  const shouldDropFirstLinePrefix = (() => {
+    if (firstLineMatches.length === 0) {
+      return false;
+    }
 
-  if (firstLineMatches.length > 0 && firstLineMatches[0].index > 0) {
+    const firstMarkerIndex = firstLineMatches[0].index;
+    if (firstMarkerIndex <= 0) {
+      return false;
+    }
+
+    const rawPrefix = firstLine.slice(0, firstMarkerIndex);
+    const strippedPrefix = stripZeroWidth(rawPrefix).trim();
+    if (strippedPrefix.length === 0) {
+      return false;
+    }
+
+    const normalizedPrefix = strippedPrefix.toLowerCase();
+    const prefixHasIndicator =
+      headerPrefixIndicatorKeywords.some((keyword) => normalizedPrefix.includes(keyword)) ||
+      /[•|]/.test(strippedPrefix) ||
+      /[-–—]/.test(strippedPrefix) ||
+      /\bby\b/i.test(strippedPrefix);
+    const prefixLengthScore = normalizedPrefix.replace(/\s+/g, ' ').length >= 15;
+
+    if (firstLineMatches.length < 2 && !prefixHasIndicator) {
+      return false;
+    }
+
+    if (!prefixHasIndicator && !prefixLengthScore) {
+      return false;
+    }
+
+    let previousEnd = firstMarkerIndex;
+    for (const match of firstLineMatches) {
+      const separator = stripZeroWidth(firstLine.slice(previousEnd, match.index));
+      if (separator.length > 0 && !markerSeparatorPattern.test(separator)) {
+        return false;
+      }
+      previousEnd = match.index + match[0].length;
+    }
+
+    return true;
+  })();
+
+  if (shouldDropFirstLinePrefix) {
     const lastMatch = firstLineMatches[firstLineMatches.length - 1];
     const restOfFirstLine = firstLine
       .slice(lastMatch.index + lastMatch[0].length)
@@ -1322,6 +1412,9 @@ function sanitizeTranscriptForPrompt(transcript) {
     processedText = processedText.replace(pattern, (_, prefix, marker) => {
       const safePrefix = prefix === undefined ? '' : prefix;
       const safeMarker = marker === undefined ? '' : marker;
+      if (!shouldIsolateMarker(safeMarker)) {
+        return `${safePrefix}${safeMarker}`;
+      }
       return `${safePrefix}\n${safeMarker}\n`;
     });
   }
