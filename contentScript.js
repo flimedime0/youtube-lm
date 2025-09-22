@@ -1280,11 +1280,11 @@ function sanitizeTranscriptForPrompt(transcript) {
     .replace(/\r\n?/g, '\n')
     .replace(/[\u2028\u2029]/g, '\n');
 
-  const shareMarkerPattern = '\\bShare\\s+Video(?=\\s|$|[.,;:?!]|[A-Z])';
-  const downloadMarkerPattern =
-    '\\bDownload\\s*(?:\\.[^\\s]+?(?=(?:\\s|$|[.,;:?!])|Copy|Share|Download)|[A-Za-z]+?(?=(?:\\s|$|[.,;:?!])|Copy|Share|Download))';
-  const copyMarkerPattern = '\\bCopy(?=\\s|$|[.,;:?!]|[A-Z])';
-  const marketingMarkerPattern = `(?:${shareMarkerPattern}|${downloadMarkerPattern}|${copyMarkerPattern})`;
+  const shareMarkerCorePattern = 'Share\\s+Video(?=\\s|$|[.,;:?!]|[A-Z])';
+  const downloadMarkerCorePattern =
+    'Download\\s*(?:\\.[^\\s]+?(?=(?:\\s|$|[.,;:?!])|Copy|Share|Download)|[A-Za-z]+?(?=(?:\\s|$|[.,;:?!])|Copy|Share|Download))';
+  const copyMarkerCorePattern = 'Copy(?=\\s|$|[.,;:?!]|[A-Z])';
+  const marketingMarkerPattern = `(?:${shareMarkerCorePattern}|${downloadMarkerCorePattern}|${copyMarkerCorePattern})`;
 
   const firstLineBreakIndex = normalizedText.indexOf('\n');
   const firstLine =
@@ -1304,14 +1304,18 @@ function sanitizeTranscriptForPrompt(transcript) {
   }
 
   const marketingBreakPatterns = [
-    new RegExp(shareMarkerPattern, 'g'),
-    new RegExp(downloadMarkerPattern, 'g'),
-    new RegExp(copyMarkerPattern, 'g')
+    new RegExp(`(^|[^A-Za-z0-9])?(${shareMarkerCorePattern})`, 'g'),
+    new RegExp(`(^|[^A-Za-z0-9])?(${downloadMarkerCorePattern})`, 'g'),
+    new RegExp(`(^|[^A-Za-z0-9])?(${copyMarkerCorePattern})`, 'g')
   ];
 
   let processedText = normalizedText;
   for (const pattern of marketingBreakPatterns) {
-    processedText = processedText.replace(pattern, (match) => `\n${match}\n`);
+    processedText = processedText.replace(pattern, (_, prefix, marker) => {
+      const safePrefix = prefix === undefined ? '' : prefix;
+      const safeMarker = marker === undefined ? '' : marker;
+      return `${safePrefix}\n${safeMarker}\n`;
+    });
   }
 
   const lines = processedText
