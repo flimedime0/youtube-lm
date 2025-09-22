@@ -70,3 +70,19 @@ test('sanitizeTranscriptForPrompt splits markers following inline text', () => {
     `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
   );
 });
+
+test('sanitizeTranscriptForPrompt strips zero-width separator characters around markers', () => {
+  const zeroWidthSeparator = '\u2060';
+  const rawTranscript = [
+    `Understanding AI in 2024 • Jan 5, 2024 • by Daniel Johnson Share Video${zeroWidthSeparator}Download .srt${zeroWidthSeparator}Copy${zeroWidthSeparator}Daniel.`,
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.ok(
+    sanitized.startsWith('Daniel.'),
+    `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
+  );
+});
