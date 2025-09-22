@@ -36,7 +36,7 @@ const DEFAULT_SETTINGS = {
   includeTakeaways: true,
   includeActionSteps: true,
   responseLanguage: 'English',
-  customInstructions: '',
+  customInstructions: 'You are helping me summarize a YouTube video.',
   autoSendPrompt: true
 };
 
@@ -956,11 +956,16 @@ async function handleSummarize(button) {
     }
 
     const title = getVideoTitle();
+    const creator = getVideoCreator();
+    const uploadDate = getVideoUploadDate();
     const prompt = buildPrompt({
       title,
       url: targetUrl,
       transcript,
-      settings
+      settings,
+      creator,
+      uploadDate,
+      referenceDate: new Date()
     });
 
     setButtonState(button, 'openingChat');
@@ -1094,25 +1099,135 @@ function getVideoTitle() {
   return document.title;
 }
 
-function buildPrompt({ title, url, transcript, settings }) {
+function getVideoCreator() {
+  const authorLink = document.querySelector('link[itemprop="name"][content]');
+  if (authorLink?.content) {
+    const normalized = authorLink.content.trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  const selectors = [
+    '#owner-container ytd-channel-name a',
+    '#owner-container ytd-channel-name yt-formatted-string',
+    '#upload-info ytd-channel-name a',
+    '#text-container ytd-channel-name yt-formatted-string',
+    'ytd-channel-name a',
+    'ytd-channel-name yt-formatted-string',
+    'ytd-reel-player-header-renderer #channel-name a',
+    'ytd-reel-player-header-renderer #channel-name yt-formatted-string',
+    'ytd-reel-player-header-renderer #creator-container yt-formatted-string'
+  ];
+
+  for (const selector of selectors) {
+    const element = document.querySelector(selector);
+    const text = element?.innerText || element?.textContent;
+    if (text) {
+      const normalized = text.trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return '';
+}
+
+function getVideoUploadDate() {
+  const metaSelectors = [
+    'meta[itemprop="uploadDate"]',
+    'meta[itemprop="datePublished"]',
+    'meta[property="og:video:release_date"]'
+  ];
+
+  for (const selector of metaSelectors) {
+    const element = document.querySelector(selector);
+    const content =
+      element?.getAttribute?.('content') || (element && 'content' in element ? element.content : null);
+    if (typeof content === 'string') {
+      const normalized = content.trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  const textSelectors = [
+    '#info-strings yt-formatted-string',
+    '#description #info-strings yt-formatted-string',
+    'ytd-video-primary-info-renderer #info-strings yt-formatted-string',
+    'ytd-reel-player-header-renderer #info #metadata-line span',
+    'span[itemprop="uploadDate"]',
+    'time[itemprop="datePublished"]'
+  ];
+
+  for (const selector of textSelectors) {
+    const element = document.querySelector(selector);
+    const text = element?.innerText || element?.textContent || element?.getAttribute?.('datetime');
+    if (text) {
+      const normalized = text.trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return '';
+}
+
+function formatDateForPrompt(value) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      return '';
+    }
+    return value.toISOString().slice(0, 10);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return '';
+    }
+
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) {
+      const parsedDate = new Date(parsed);
+      if (!Number.isNaN(parsedDate.getTime())) {
+        return parsedDate.toISOString().slice(0, 10);
+      }
+    }
+
+    return trimmed;
+  }
+
+  return '';
+}
+
+function quoteForPrompt(value) {
+  if (value === null || value === undefined) {
+    return '""';
+  }
+
+  const stringValue = String(value);
+  const escaped = stringValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
+function buildPrompt({ title, url, transcript, settings, creator, uploadDate, referenceDate }) {
   const trimmedTranscript = sanitizeTranscriptForPrompt(transcript);
   if (!trimmedTranscript) {
     throw new Error('Transcript unavailable for this video.');
   }
-  const safeTitle = title?.trim() || 'Untitled video';
+  const safeTitle = typeof title === 'string' && title.trim() ? title.trim() : 'Untitled video';
+  const safeUrl = typeof url === 'string' && url.trim() ? url.trim() : 'Unknown';
+  const safeCreator = typeof creator === 'string' && creator.trim() ? creator.trim() : 'Unknown Creator';
+  const formattedUploadDate = formatDateForPrompt(uploadDate) || 'Unknown';
+  const formattedReferenceDate = formatDateForPrompt(referenceDate) || formatDateForPrompt(new Date());
   const overviewCount = sanitizeNumber(settings.overviewSentences, DEFAULT_SETTINGS.overviewSentences, 1, 10);
   const includeTakeaways = Boolean(settings.includeTakeaways);
   const includeActionSteps = Boolean(settings.includeActionSteps);
   const responseLanguage = settings.responseLanguage?.trim() || DEFAULT_SETTINGS.responseLanguage;
-
-  const requestParts = [`Please give me a concise overview in ${overviewCount} sentence${overviewCount === 1 ? '' : 's'}.`];
-  if (includeTakeaways) {
-    requestParts.push('After that, add a bulleted list of the main takeaways.');
-  }
-  if (includeActionSteps) {
-    requestParts.push('Call out any actionable steps or recommendations in their own short section.');
-  }
-  requestParts.push(`Write the entire response in ${responseLanguage}.`);
 
   const customLines = settings.customInstructions
     ? settings.customInstructions
@@ -1121,17 +1236,35 @@ function buildPrompt({ title, url, transcript, settings }) {
         .filter((line) => line.length > 0)
     : [];
 
-  const customBlock = customLines.length
-    ? `Additional preferences:\n${customLines.map((line) => `- ${line}`).join('\n')}`
-    : '';
+  const instructionsSegments = [];
+  if (customLines.length) {
+    instructionsSegments.push(customLines.join(' '));
+  }
+  instructionsSegments.push(`Please give me a concise overview in ${overviewCount} sentence${overviewCount === 1 ? '' : 's'}.`);
+  if (includeTakeaways) {
+    instructionsSegments.push('After that, add a bulleted list of the main takeaways.');
+  }
+  if (includeActionSteps) {
+    instructionsSegments.push('Call out any actionable steps or recommendations in their own short section.');
+  }
+  instructionsSegments.push(`Write the entire response in ${responseLanguage}.`);
+  instructionsSegments.push('Use the transcript below as your source material.');
+
+  const metadataLines = [
+    `Link: ${quoteForPrompt(safeUrl)}`,
+    `Title: ${quoteForPrompt(safeTitle)}`,
+    `Creator: ${quoteForPrompt(safeCreator)}`,
+    `Uploaded: ${quoteForPrompt(formattedUploadDate)}`,
+    `Date: ${quoteForPrompt(formattedReferenceDate)}`
+  ].join('\n');
+
+  const instructionsText = instructionsSegments.filter((segment) => segment && segment.trim().length > 0).join(' ');
 
   const promptSections = [
-    'You are helping me summarize a YouTube video.',
-    `Title: "${safeTitle}"\nLink: ${url}`,
-    requestParts.join(' '),
-    customBlock,
-    `Use the transcript below as your source material:\n${trimmedTranscript}`
-  ].filter((section) => section && section.trim().length > 0);
+    metadataLines,
+    `Instructions: ${quoteForPrompt(instructionsText)}`,
+    `Text: ${quoteForPrompt(trimmedTranscript)}`
+  ];
 
   return promptSections.join('\n\n');
 }
@@ -1151,12 +1284,19 @@ function sanitizeTranscriptForPrompt(transcript) {
 }
 
 function buildPromptPreview(settings) {
-  const previewTranscript = ['[00:00] {{transcript_line_1}}', '[00:45] {{transcript_line_2}}', '[01:30] {{transcript_line_3}}'].join('\n');
+  const previewTranscript = [
+    '[00:00] {{transcript_line_1}}',
+    '[00:45] {{transcript_line_2}}',
+    '[01:30] {{transcript_line_3}}'
+  ].join('\n');
   return buildPrompt({
     title: '{{video_title}}',
     url: 'https://www.youtube.com/watch?v={{video_id}}',
     transcript: previewTranscript,
-    settings
+    settings,
+    creator: '{{channel_name}}',
+    uploadDate: '{{upload_date}}',
+    referenceDate: '{{current_date}}'
   });
 }
 
@@ -1952,7 +2092,7 @@ function ensureSettingsPanel() {
   languageLabel.appendChild(languageInput);
 
   const instructionsLabel = document.createElement('label');
-  instructionsLabel.textContent = 'Additional instructions (one per line)';
+  instructionsLabel.textContent = 'Custom instruction lines (one per line)';
   const instructionsTextarea = document.createElement('textarea');
   instructionsTextarea.name = 'customInstructions';
   instructionsLabel.appendChild(instructionsTextarea);
