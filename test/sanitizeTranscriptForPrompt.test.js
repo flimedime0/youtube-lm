@@ -86,3 +86,22 @@ test('sanitizeTranscriptForPrompt strips zero-width separator characters around 
     `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
   );
 });
+
+test('sanitizeTranscriptForPrompt preserves zero-width characters in body content', () => {
+  const zeroWidthNonJoiner = '\u200c';
+  const zeroWidthJoiner = '\u200d';
+  const bodyLineOne = `Exploring${zeroWidthNonJoiner}techniques for design`;
+  const bodyLineTwo = `Collaborative${zeroWidthJoiner}planning works well.`;
+  const rawTranscript = [
+    '& Summary',
+    'Share Video',
+    'Download .txt',
+    'Copy',
+    bodyLineOne,
+    bodyLineTwo
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.strictEqual(sanitized, `${bodyLineOne}\n${bodyLineTwo}`);
+});
