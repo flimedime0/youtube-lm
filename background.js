@@ -422,8 +422,8 @@ function parseTranscriptFromReaderText(pageText) {
   }
 
   const sanitized = pageText.replace(/\r/g, '\n').replace(/\u00a0/g, ' ');
-  const truncated = truncateMarketingContent(sanitized);
-  const transcriptSection = extractTranscriptSection(truncated).trim();
+  const transcriptCandidate = extractTranscriptSection(sanitized);
+  const transcriptSection = truncateMarketingContent(transcriptCandidate).trim();
 
   if (!transcriptSection) {
     throw new Error('Transcript data not found on Glasp for this video.');
