@@ -1294,7 +1294,7 @@ function sanitizeTranscriptForPrompt(transcript) {
   const copyMarkerCorePattern = `Copy${markerBoundaryLookahead}`;
   const marketingMarkerPattern = `(?:${shareMarkerCorePattern}|${downloadMarkerCorePattern}|${copyMarkerCorePattern})`;
   const markerSeparatorCharacters =
-    `\\s\\u00a0${zeroWidthCharacters}&•*·\\-–—|/\\\\.,;:?!()\\[\\]"'`;
+    `\\\\s\\u00a0${zeroWidthCharacters}&•*·\\-–—|/\\\\.,;:?!()\\[\\]"'`;
   const markerSeparatorPattern = new RegExp(`^[${markerSeparatorCharacters}]*$`);
   const headerPrefixIndicatorKeywords = [
     'summary',
