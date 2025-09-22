@@ -1306,6 +1306,7 @@ function sanitizeTranscriptForPrompt(transcript) {
     'notes',
     'my notes'
   ]);
+  const marketingKeywordFragments = ['share', 'video', 'download', 'copy', 'highlight', 'highlights', 'note', 'notes', 'transcript'];
   const isDownloadHeader = (headerKey) =>
     headerKey.startsWith('download ') && /(?:\.srt\b|\btranscript\b|\.txt\b|\btext\b)/.test(headerKey);
 
@@ -1339,10 +1340,15 @@ function sanitizeTranscriptForPrompt(transcript) {
       continue;
     }
 
+    const hasSummaryPrefix = headerKey && headerKey.startsWith('summary');
+    const containsMarketingKeyword =
+      headerKey && marketingKeywordFragments.some((keyword) => headerKey.includes(keyword));
+
     const isMarketingLine =
       !comparisonKey ||
       marketingPrefixes.some((pattern) => pattern.test(headerCandidate)) ||
-      (headerKey && (marketingExactMatches.has(headerKey) || isDownloadHeader(headerKey)));
+      (headerKey && (marketingExactMatches.has(headerKey) || isDownloadHeader(headerKey))) ||
+      (hasSummaryPrefix && (headerKey === 'summary' || containsMarketingKeyword));
     if (isMarketingLine) {
       startIndex += 1;
       continue;
