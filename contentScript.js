@@ -1276,20 +1276,21 @@ function sanitizeTranscriptForPrompt(transcript) {
     return '';
   }
 
-  const zeroWidthCharsRegex = /[\u200b\u200c\u200d\u2060\ufeff]/g;
+  const zeroWidthCharacters = '\\u200b\\u200c\\u200d\\u2060\\ufeff';
+  const zeroWidthCharsRegex = new RegExp(`[${zeroWidthCharacters}]`, 'g');
+  const stripZeroWidth = (value) => value.replace(zeroWidthCharsRegex, '');
 
-  let normalizedText = transcript
-    .replace(/\r\n?/g, '\n')
-    .replace(/[\u2028\u2029]/g, '\n')
-    .replace(zeroWidthCharsRegex, '');
+  let normalizedText = transcript.replace(/\r\n?/g, '\n').replace(/[\u2028\u2029]/g, '\n');
 
-  const zeroWidthOptionalPattern = '[\\u200b\\u200c\\u200d\\u2060\\ufeff]*';
+  const zeroWidthOptionalPattern = `[${zeroWidthCharacters}]*`;
+  const whitespaceOrZeroWidthPattern = `(?:\\s|[${zeroWidthCharacters}])+`;
+  const optionalWhitespaceOrZeroWidthPattern = `(?:\\s|[${zeroWidthCharacters}])*`;
   const markerBoundaryLookahead = `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|[A-Z]))`;
   const markerContinuationLookahead = `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|Copy|Share|Download))`;
 
-  const shareMarkerCorePattern = `Share\\s+Video${markerBoundaryLookahead}`;
+  const shareMarkerCorePattern = `Share${zeroWidthOptionalPattern}${whitespaceOrZeroWidthPattern}Video${markerBoundaryLookahead}`;
   const downloadMarkerCorePattern =
-    `Download\\s*(?:\\.[^\\s]+?${markerContinuationLookahead}|[A-Za-z]+?${markerContinuationLookahead})`;
+    `Download${zeroWidthOptionalPattern}${optionalWhitespaceOrZeroWidthPattern}(?:\\.[^\\s${zeroWidthCharacters}]+?${markerContinuationLookahead}|[A-Za-z]+?${markerContinuationLookahead})`;
   const copyMarkerCorePattern = `Copy${markerBoundaryLookahead}`;
   const marketingMarkerPattern = `(?:${shareMarkerCorePattern}|${downloadMarkerCorePattern}|${copyMarkerCorePattern})`;
 
@@ -1302,7 +1303,7 @@ function sanitizeTranscriptForPrompt(transcript) {
     const lastMatch = firstLineMatches[firstLineMatches.length - 1];
     const restOfFirstLine = firstLine
       .slice(lastMatch.index + lastMatch[0].length)
-      .replace(/^[\s\u00a0]+/, '');
+      .replace(new RegExp(`^[\\s\\u00a0${zeroWidthCharacters}]+`, 'u'), '');
     const remainder =
       firstLineBreakIndex === -1 ? '' : normalizedText.slice(firstLineBreakIndex + 1);
     normalizedText = restOfFirstLine
@@ -1356,7 +1357,7 @@ function sanitizeTranscriptForPrompt(transcript) {
     headerKey.startsWith('download ') && /(?:\.srt\b|\btranscript\b|\.txt\b|\btext\b)/.test(headerKey);
 
   const normalizeForComparison = (value) =>
-    value
+    stripZeroWidth(value)
       .toLowerCase()
       .replace(/[\s\u00a0]+/g, ' ')
       .replace(/^[\s\p{P}\p{S}]+/gu, '')
@@ -1366,7 +1367,7 @@ function sanitizeTranscriptForPrompt(transcript) {
   let startIndex = 0;
   while (startIndex < lines.length) {
     const line = lines[startIndex];
-    const compactLine = line.replace(/[\s\u00a0]+/g, ' ');
+    const compactLine = stripZeroWidth(line).replace(/[\s\u00a0]+/g, ' ');
     const headerCandidate = compactLine.replace(/^[\s&•*·\-–—]+/u, '');
     const headerKey = normalizeForComparison(headerCandidate);
     const comparisonKey = normalizeForComparison(line);
