@@ -25,3 +25,18 @@ test('sanitizeTranscriptForPrompt removes Glasp header boilerplate', () => {
     'Daniel: Welcome back everyone.\nSarah: Thanks for having me!'
   );
 });
+
+test('sanitizeTranscriptForPrompt removes single-line Glasp header boilerplate', () => {
+  const rawTranscript = [
+    '& SummaryPOV: If Tag this to revisit later. Share VideoDownload .srtCopy',
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.strictEqual(
+    sanitized,
+    'Daniel: Welcome back everyone.\nSarah: Thanks for having me!'
+  );
+});
