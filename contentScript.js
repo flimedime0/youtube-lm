@@ -1276,11 +1276,45 @@ function sanitizeTranscriptForPrompt(transcript) {
     return '';
   }
 
-  const normalizedText = transcript
+  let normalizedText = transcript
     .replace(/\r\n?/g, '\n')
     .replace(/[\u2028\u2029]/g, '\n');
 
-  const lines = normalizedText
+  const shareMarkerPattern = '\\bShare\\s+Video(?=\\s|$|[.,;:?!]|[A-Z])';
+  const downloadMarkerPattern =
+    '\\bDownload\\s*(?:\\.[^\\s]+?(?=(?:\\s|$|[.,;:?!])|Copy|Share|Download)|[A-Za-z]+?(?=(?:\\s|$|[.,;:?!])|Copy|Share|Download))';
+  const copyMarkerPattern = '\\bCopy(?=\\s|$|[.,;:?!]|[A-Z])';
+  const marketingMarkerPattern = `(?:${shareMarkerPattern}|${downloadMarkerPattern}|${copyMarkerPattern})`;
+
+  const firstLineBreakIndex = normalizedText.indexOf('\n');
+  const firstLine =
+    firstLineBreakIndex === -1 ? normalizedText : normalizedText.slice(0, firstLineBreakIndex);
+  const firstLineMatches = [...firstLine.matchAll(new RegExp(marketingMarkerPattern, 'g'))];
+
+  if (firstLineMatches.length > 0 && firstLineMatches[0].index > 0) {
+    const lastMatch = firstLineMatches[firstLineMatches.length - 1];
+    const restOfFirstLine = firstLine
+      .slice(lastMatch.index + lastMatch[0].length)
+      .replace(/^[\s\u00a0]+/, '');
+    const remainder =
+      firstLineBreakIndex === -1 ? '' : normalizedText.slice(firstLineBreakIndex + 1);
+    normalizedText = restOfFirstLine
+      ? `${restOfFirstLine}${remainder ? `\n${remainder}` : ''}`
+      : remainder;
+  }
+
+  const marketingBreakPatterns = [
+    new RegExp(shareMarkerPattern, 'g'),
+    new RegExp(downloadMarkerPattern, 'g'),
+    new RegExp(copyMarkerPattern, 'g')
+  ];
+
+  let processedText = normalizedText;
+  for (const pattern of marketingBreakPatterns) {
+    processedText = processedText.replace(pattern, (match) => `\n${match}\n`);
+  }
+
+  const lines = processedText
     .split('\n')
     .map((line) => line.replace(/\u00a0/g, ' ').trim())
     .filter((line) => line.length > 0);
