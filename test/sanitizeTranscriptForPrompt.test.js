@@ -40,3 +40,18 @@ test('sanitizeTranscriptForPrompt removes single-line Glasp header boilerplate',
     'Daniel: Welcome back everyone.\nSarah: Thanks for having me!'
   );
 });
+
+test('sanitizeTranscriptForPrompt splits inline Glasp header markers', () => {
+  const rawTranscript = [
+    'Understanding AI in 2024 • Jan 5, 2024 • by Daniel Johnson Share VideoDownload .srtCopyDaniel.',
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.ok(
+    sanitized.startsWith('Daniel.'),
+    `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
+  );
+});
