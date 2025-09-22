@@ -1276,14 +1276,21 @@ function sanitizeTranscriptForPrompt(transcript) {
     return '';
   }
 
+  const zeroWidthCharsRegex = /[\u200b\u200c\u200d\u2060\ufeff]/g;
+
   let normalizedText = transcript
     .replace(/\r\n?/g, '\n')
-    .replace(/[\u2028\u2029]/g, '\n');
+    .replace(/[\u2028\u2029]/g, '\n')
+    .replace(zeroWidthCharsRegex, '');
 
-  const shareMarkerCorePattern = 'Share\\s+Video(?=\\s|$|[.,;:?!]|[A-Z])';
+  const zeroWidthOptionalPattern = '[\\u200b\\u200c\\u200d\\u2060\\ufeff]*';
+  const markerBoundaryLookahead = `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|[A-Z]))`;
+  const markerContinuationLookahead = `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|Copy|Share|Download))`;
+
+  const shareMarkerCorePattern = `Share\\s+Video${markerBoundaryLookahead}`;
   const downloadMarkerCorePattern =
-    'Download\\s*(?:\\.[^\\s]+?(?=(?:\\s|$|[.,;:?!])|Copy|Share|Download)|[A-Za-z]+?(?=(?:\\s|$|[.,;:?!])|Copy|Share|Download))';
-  const copyMarkerCorePattern = 'Copy(?=\\s|$|[.,;:?!]|[A-Z])';
+    `Download\\s*(?:\\.[^\\s]+?${markerContinuationLookahead}|[A-Za-z]+?${markerContinuationLookahead})`;
+  const copyMarkerCorePattern = `Copy${markerBoundaryLookahead}`;
   const marketingMarkerPattern = `(?:${shareMarkerCorePattern}|${downloadMarkerCorePattern}|${copyMarkerCorePattern})`;
 
   const firstLineBreakIndex = normalizedText.indexOf('\n');
