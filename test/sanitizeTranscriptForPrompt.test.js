@@ -55,3 +55,18 @@ test('sanitizeTranscriptForPrompt splits inline Glasp header markers', () => {
     `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
   );
 });
+
+test('sanitizeTranscriptForPrompt splits markers following inline text', () => {
+  const rawTranscript = [
+    'Understanding AI in 2024 • Jan 5, 2024 • by Daniel Johnson #videogamessShare VideoDownload .srtCopyDaniel.',
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.ok(
+    sanitized.startsWith('Daniel.'),
+    `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
+  );
+});
