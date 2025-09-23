@@ -21,7 +21,7 @@ This Chrome extension adds a "Summarize with ChatGPT" button to YouTube video pa
 
 ## Notes
 
-- The extension requires access to `https://www.youtube.com/*` to insert the button, `https://glasp.co/*` to fetch transcripts, and `https://chat.openai.com/*` to open ChatGPT.
+- The extension requires access to `https://www.youtube.com/*` to insert the button, `https://glasp.co/*` to fetch transcripts, and `https://chatgpt.com/*` to open ChatGPT.
 - Sign in to Glasp in the same browser to ensure transcripts are accessible when requested.
 - For videos without transcripts, the extension will notify you that a transcript is unavailable.
 - If you are not logged in to ChatGPT, you may need to log in before the prompt appears. The extension will retry several times while the ChatGPT interface loads.
