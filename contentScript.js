@@ -1317,6 +1317,7 @@ function sanitizeTranscriptForPrompt(transcript) {
     `${downloadKeywordPattern}${optionalWhitespaceOrZeroWidthPattern}(?:\\.${zeroWidthOptionalPattern}(?:[^\\s${zeroWidthCharacters}]${zeroWidthOptionalPattern})+?${markerContinuationLookahead}|${downloadTrailingWordPattern}${markerContinuationLookahead})`;
   const copyMarkerCorePattern = `${copyKeywordPattern}${markerBoundaryLookahead}`;
   const marketingMarkerPattern = `(?:${shareMarkerCorePattern}|${downloadMarkerCorePattern}|${copyMarkerCorePattern})`;
+  const sawAnyMarketingMarker = new RegExp(marketingMarkerPattern).test(normalizedText);
   const markerSeparatorCharacters =
     `\\\\s\\u00a0${zeroWidthCharacters}&•*·\\-–—|/\\\\.,;:?!()\\[\\]"'`;
   const markerSeparatorPattern = new RegExp(`^[${markerSeparatorCharacters}]*$`);
@@ -1591,7 +1592,7 @@ function sanitizeTranscriptForPrompt(transcript) {
 
   let markerLineIndices = buildMarkerLineIndices();
 
-  if (markerLineIndices.length === 0) {
+  if (markerLineIndices.length === 0 && sawAnyMarketingMarker) {
     const droppedMetadata = dropLeadingMetadataEntries();
     if (droppedMetadata) {
       markerLineIndices = buildMarkerLineIndices();
