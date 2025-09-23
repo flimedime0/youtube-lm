@@ -26,6 +26,26 @@ test('sanitizeTranscriptForPrompt removes Glasp header boilerplate', () => {
   );
 });
 
+test('sanitizeTranscriptForPrompt removes metadata lines before Glasp markers', () => {
+  const rawTranscript = [
+    'POV: If Tag was a Video Game…🤣 @DanielLaBelle #theboys #viral #shorts #tag #videogames',
+    'September 15, 2025',
+    'by The Johnson Brothers',
+    'Share Video',
+    'Download .srt',
+    'Copy',
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.strictEqual(
+    sanitized,
+    'Daniel: Welcome back everyone.\nSarah: Thanks for having me!'
+  );
+});
+
 test('sanitizeTranscriptForPrompt removes single-line Glasp header boilerplate', () => {
   const rawTranscript = [
     '& SummaryPOV: If Tag this to revisit later. Share VideoDownload .srtCopy',

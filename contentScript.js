@@ -1466,19 +1466,52 @@ function sanitizeTranscriptForPrompt(transcript) {
       .replace(/[\s\p{P}\p{S}]+$/gu, '')
       .trim();
 
-  let startIndex = 0;
-  while (startIndex < lines.length) {
-    const line = lines[startIndex];
+  const lineData = lines.map((line) => {
     const compactLine = stripZeroWidth(line).replace(/[\s\u00a0]+/g, ' ');
     const headerCandidate = compactLine.replace(/^[\s&•*·\-–—]+/u, '');
     const headerKey = normalizeForComparison(headerCandidate);
     const comparisonKey = normalizeForComparison(line);
+    return { line, headerCandidate, headerKey, comparisonKey };
+  });
+
+  const markerLineIndices = [];
+  for (let index = 0; index < lineData.length; index += 1) {
+    const { headerKey } = lineData[index];
+    if (!headerKey) {
+      continue;
+    }
+
+    if (
+      headerKey === 'share video' ||
+      headerKey.startsWith('share video ') ||
+      headerKey === 'copy' ||
+      headerKey.startsWith('copy ') ||
+      isDownloadHeader(headerKey)
+    ) {
+      markerLineIndices.push(index);
+    }
+  }
+
+  let startIndex = 0;
+  if (markerLineIndices.length > 0) {
+    const firstMarkerIndex = markerLineIndices[0];
+    const hasCloseMarker = markerLineIndices.some(
+      (index) => index > firstMarkerIndex && index - firstMarkerIndex <= 3
+    );
+
+    if (firstMarkerIndex > 0 && firstMarkerIndex <= 6 && hasCloseMarker) {
+      startIndex = firstMarkerIndex;
+    }
+  }
+
+  while (startIndex < lineData.length) {
+    const { headerCandidate, headerKey, comparisonKey } = lineData[startIndex];
 
     let duplicateCount = 1;
     while (
-      startIndex + duplicateCount < lines.length &&
+      startIndex + duplicateCount < lineData.length &&
       comparisonKey &&
-      comparisonKey === normalizeForComparison(lines[startIndex + duplicateCount])
+      comparisonKey === lineData[startIndex + duplicateCount].comparisonKey
     ) {
       duplicateCount += 1;
     }
@@ -1505,7 +1538,7 @@ function sanitizeTranscriptForPrompt(transcript) {
     break;
   }
 
-  const sanitizedLines = lines.slice(startIndex);
+  const sanitizedLines = lineData.slice(startIndex).map((entry) => entry.line);
   const sanitizedText = sanitizedLines.join('\n').trim();
   return sanitizedText;
 }
