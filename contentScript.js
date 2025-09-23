@@ -1545,18 +1545,18 @@ function sanitizeTranscriptForPrompt(transcript) {
     }
   }
 
+  const qualifiesAsMetadataEntry = (entry) =>
+    isMarketingEntry(entry) || looksLikeMetadataEntry(entry);
+
   let startIndex = 0;
   if (markerLineIndices.length > 0) {
     const firstMarkerIndex = markerLineIndices[0];
-    const hasCloseMarker = markerLineIndices.some(
-      (index) => index > firstMarkerIndex && index - firstMarkerIndex <= 3
-    );
 
-    if (firstMarkerIndex > 0 && firstMarkerIndex <= 6 && hasCloseMarker) {
+    if (firstMarkerIndex > 0) {
       const precedingEntries = lineData.slice(0, firstMarkerIndex);
       const precedingLinesAreMetadata =
         precedingEntries.length > 0 &&
-        precedingEntries.every((entry) => isMarketingEntry(entry) || looksLikeMetadataEntry(entry)) &&
+        precedingEntries.every((entry) => qualifiesAsMetadataEntry(entry)) &&
         precedingEntries.some((entry) => looksLikeMetadataEntry(entry));
 
       if (precedingLinesAreMetadata) {
