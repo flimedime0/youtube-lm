@@ -1368,6 +1368,7 @@ function sanitizeTranscriptForPrompt(transcript) {
   let firstLineBreakIndex = normalizedText.indexOf('\n');
   let firstLine = firstLineBreakIndex === -1 ? normalizedText : normalizedText.slice(0, firstLineBreakIndex);
   let firstLineMatches = [...firstLine.matchAll(new RegExp(marketingMarkerPattern, 'g'))];
+  let removedFirstMarkerLineViaHardCut = false;
 
   // Hard-cut header: if the first line contains ≥2 marketing markers (Share/Download/Copy),
   // drop EVERYTHING before the *last* marker so the first token is the spoken text (e.g., "Daniel.")
@@ -1384,6 +1385,7 @@ function sanitizeTranscriptForPrompt(transcript) {
     firstLineBreakIndex = normalizedText.indexOf('\n');
     firstLine = firstLineBreakIndex === -1 ? normalizedText : normalizedText.slice(0, firstLineBreakIndex);
     firstLineMatches = [...firstLine.matchAll(new RegExp(marketingMarkerPattern, 'g'))];
+    removedFirstMarkerLineViaHardCut = true;
   }
 
   const shouldDropFirstLinePrefix = (() => {
@@ -1498,7 +1500,7 @@ function sanitizeTranscriptForPrompt(transcript) {
       .replace(/[\s\p{P}\p{S}]+$/gu, '')
       .trim();
 
-  const lineData = lines.map((line) => {
+  let lineData = lines.map((line) => {
     const compactLine = stripZeroWidth(line).replace(/[\s\u00a0]+/g, ' ');
     const headerCandidate = compactLine.replace(/^[\s&•*·\-–—]+/u, '');
     const headerKey = normalizeForComparison(headerCandidate);
@@ -1531,6 +1533,24 @@ function sanitizeTranscriptForPrompt(transcript) {
     return false;
   };
 
+  const dropLeadingMetadataEntries = () => {
+    let dropCount = 0;
+    while (dropCount < lineData.length && looksLikeMetadataEntry(lineData[dropCount])) {
+      dropCount += 1;
+    }
+
+    if (dropCount === 0) {
+      return false;
+    }
+
+    lineData = lineData.slice(dropCount);
+    return true;
+  };
+
+  if (removedFirstMarkerLineViaHardCut) {
+    dropLeadingMetadataEntries();
+  }
+
   const isMarketingEntry = (entry) => {
     const { headerCandidate, headerKey, comparisonKey } = entry;
     if (!comparisonKey) {
@@ -1548,21 +1568,33 @@ function sanitizeTranscriptForPrompt(transcript) {
     );
   };
 
-  const markerLineIndices = [];
-  for (let index = 0; index < lineData.length; index += 1) {
-    const { headerKey } = lineData[index];
-    if (!headerKey) {
-      continue;
-    }
+  const buildMarkerLineIndices = () => {
+    const indices = [];
+    for (let index = 0; index < lineData.length; index += 1) {
+      const { headerKey } = lineData[index];
+      if (!headerKey) {
+        continue;
+      }
 
-    if (
-      headerKey === 'share video' ||
-      headerKey.startsWith('share video ') ||
-      headerKey === 'copy' ||
-      headerKey.startsWith('copy ') ||
-      isDownloadHeader(headerKey)
-    ) {
-      markerLineIndices.push(index);
+      if (
+        headerKey === 'share video' ||
+        headerKey.startsWith('share video ') ||
+        headerKey === 'copy' ||
+        headerKey.startsWith('copy ') ||
+        isDownloadHeader(headerKey)
+      ) {
+        indices.push(index);
+      }
+    }
+    return indices;
+  };
+
+  let markerLineIndices = buildMarkerLineIndices();
+
+  if (markerLineIndices.length === 0) {
+    const droppedMetadata = dropLeadingMetadataEntries();
+    if (droppedMetadata) {
+      markerLineIndices = buildMarkerLineIndices();
     }
   }
 
