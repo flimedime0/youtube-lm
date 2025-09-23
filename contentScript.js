@@ -32,7 +32,7 @@ function getButtonLabelForState(state, context) {
 
 const DEFAULT_SETTINGS = {
   preferredChatHost: 'chatgpt.com',
-  customInstructions: 'Fact check, verify, and synthesize a summary.',
+  customInstructions: 'Provide a concise, fact-checked summary of the content.',
   autoSendPrompt: true
 };
 
@@ -2159,9 +2159,15 @@ function ensureGlobalStyles() {
 
     #${SETTINGS_PANEL_ID} .ytlm-settings-actions {
       display: flex;
-      justify-content: flex-end;
-      gap: 8px;
+      align-items: center;
+      gap: 12px;
       margin-top: 8px;
+    }
+
+    #${SETTINGS_PANEL_ID} .ytlm-settings-actions-buttons {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
     }
 
     #${SETTINGS_PANEL_ID} .ytlm-primary {
@@ -2188,11 +2194,17 @@ function ensureGlobalStyles() {
       cursor: pointer;
     }
 
+    #${SETTINGS_PANEL_ID} .ytlm-secondary:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
     #${SETTINGS_PANEL_ID} .ytlm-settings-status {
-      margin: 12px 0 0;
+      margin: 0;
       min-height: 18px;
       font-size: 13px;
       color: var(--yt-spec-text-secondary, #606060);
+      flex: 1;
     }
 
     #${SETTINGS_PANEL_ID} .ytlm-settings-status.ytlm-error {
@@ -2363,7 +2375,7 @@ function ensureSettingsPanel() {
 
   const description = document.createElement('p');
   description.className = 'ytlm-settings-description';
-  description.textContent = 'Adjust how prompts are generated and which ChatGPT domain to use.';
+  description.textContent = 'Adjust prompt settings and the preferred user domain.';
 
   const form = document.createElement('form');
 
@@ -2413,6 +2425,11 @@ function ensureSettingsPanel() {
   previewNote.textContent = 'Placeholders such as {{content_title}} and {{content_line_1}} will be replaced with real content details when the prompt is sent.';
   previewContainer.append(previewHeader, previewTextarea, previewNote);
 
+  const status = document.createElement('p');
+  status.className = 'ytlm-settings-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+
   const actionsRow = document.createElement('div');
   actionsRow.className = 'ytlm-settings-actions';
   const saveButton = document.createElement('button');
@@ -2423,16 +2440,14 @@ function ensureSettingsPanel() {
   resetButton.type = 'button';
   resetButton.className = 'ytlm-secondary';
   resetButton.textContent = 'Reset';
-  actionsRow.append(saveButton, resetButton);
-
-  const status = document.createElement('p');
-  status.className = 'ytlm-settings-status';
-  status.setAttribute('role', 'status');
-  status.setAttribute('aria-live', 'polite');
+  const actionsButtons = document.createElement('div');
+  actionsButtons.className = 'ytlm-settings-actions-buttons';
+  actionsButtons.append(saveButton, resetButton);
+  actionsRow.append(status, actionsButtons);
 
   form.append(hostLabel, autoSendLabel, instructionsLabel, previewContainer, actionsRow);
 
-  modal.append(closeButton, heading, description, form, status);
+  modal.append(closeButton, heading, description, form);
   panel.appendChild(modal);
   panel.addEventListener('click', (event) => {
     if (event.target === panel) {
@@ -2595,6 +2610,10 @@ function updateUnsavedChangesStatus(refs) {
   const formSettings = collectSettingsFromElements(refs.elements);
   const hasUnsavedChanges = !areSettingsEqual(formSettings, currentSettings);
 
+  if (refs.resetButton) {
+    refs.resetButton.disabled = areSettingsEqual(formSettings, DEFAULT_SETTINGS);
+  }
+
   if (hasUnsavedChanges) {
     setStatusMessage(refs.status, 'Save to apply settings.', false);
     return;
@@ -2631,7 +2650,7 @@ async function handleSettingsSubmit({ hostSelect, autoSendCheckbox, instructions
       updatePromptPreviewFromForm(settingsPanelRefs);
     }
     setStatusMessage(status, 'Settings saved.', false);
-    closeSettingsPanel();
+    updateUnsavedChangesStatus(settingsPanelRefs);
   } catch (error) {
     console.error('Failed to save settings', error);
     setStatusMessage(status, 'Failed to save settings. Please try again.', true);
