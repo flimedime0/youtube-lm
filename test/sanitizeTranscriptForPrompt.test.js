@@ -127,6 +127,27 @@ test('sanitizeTranscriptForPrompt handles zero-width characters inside marker wo
   );
 });
 
+test('sanitizeTranscriptForPrompt handles directional zero-width marks inside markers', () => {
+  const leftToRightMark = '\u200e';
+  const rightToLeftMark = '\u200f';
+  const shareWord = Array.from('Share').join(rightToLeftMark);
+  const videoWord = Array.from('Video').join(leftToRightMark);
+  const downloadWord = Array.from('Download').join(rightToLeftMark);
+  const copyWord = Array.from('Copy').join(leftToRightMark);
+  const rawTranscript = [
+    `Understanding AI in 2024 • Jan 5, 2024 • by Daniel Johnson ${shareWord} ${videoWord}${leftToRightMark}${downloadWord} .srt${rightToLeftMark}${copyWord}${leftToRightMark}Daniel.`,
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.ok(
+    sanitized.startsWith('Daniel.'),
+    `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
+  );
+});
+
 test('sanitizeTranscriptForPrompt preserves zero-width characters in body content', () => {
   const zeroWidthNonJoiner = '\u200c';
   const zeroWidthJoiner = '\u200d';
