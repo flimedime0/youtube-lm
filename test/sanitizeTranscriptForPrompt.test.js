@@ -91,6 +91,17 @@ test('sanitizeTranscriptForPrompt splits markers following inline text', () => {
   );
 });
 
+test('removes Glasp header with glued markers; keeps spoken first word', () => {
+  const raw = [
+    'POV: If Tag … @DanielLaBelle #theboys #shorts #tags #videogamessShare VideoDownload .srtCopyDaniel. [Music] Oh man…',
+    'Daniel: Welcome back everyone.'
+  ].join('\n');
+
+  const out = sanitizeTranscriptForPrompt(raw);
+  assert.ok(out.startsWith('Daniel.'), out);
+  assert.doesNotMatch(out, /Share Video|Download|Copy|POV:|#theboys|by /);
+});
+
 test('sanitizeTranscriptForPrompt strips zero-width separator characters around markers', () => {
   const zeroWidthSeparator = '\u2060';
   const rawTranscript = [
