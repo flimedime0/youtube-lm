@@ -10,7 +10,6 @@
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
-    "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://glasp.co/*"
   ],

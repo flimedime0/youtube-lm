@@ -726,16 +726,17 @@ function isChatUrl(url) {
   if (typeof url !== 'string') {
     return false;
   }
-  return url.startsWith('https://chat.openai.com') || url.startsWith('https://chatgpt.com');
+  return url.startsWith('https://chatgpt.com');
 }
 
 function normalizeChatHost(host) {
   if (typeof host === 'string') {
-    const trimmed = host.trim().toLowerCase();
-    if (trimmed === 'chat.openai.com' || trimmed === 'chat.openai.com/') {
-      return 'chat.openai.com';
-    }
-    if (trimmed === 'chatgpt.com' || trimmed === 'chatgpt.com/') {
+    const normalized = host
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/.*/, '');
+    if (normalized === 'chatgpt.com') {
       return 'chatgpt.com';
     }
   }

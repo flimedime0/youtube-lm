@@ -32,11 +32,7 @@ function getButtonLabelForState(state, context) {
 
 const DEFAULT_SETTINGS = {
   preferredChatHost: 'chatgpt.com',
-  overviewSentences: 3,
-  includeTakeaways: true,
-  includeActionSteps: true,
-  responseLanguage: 'English',
-  customInstructions: 'You are helping me summarize a YouTube video.',
+  customInstructions: 'Fact check and verify every claim and synthesize a summary.',
   autoSendPrompt: true
 };
 
@@ -963,7 +959,7 @@ async function handleSummarize(button) {
 
     const transcript = await fetchTranscript(targetUrl);
     if (!transcript) {
-      throw new Error('Transcript unavailable for this video.');
+      throw new Error('Source text unavailable for this content.');
     }
 
     const title = getVideoTitle();
@@ -1228,17 +1224,13 @@ function quoteForPrompt(value) {
 function buildPrompt({ title, url, transcript, settings, creator, uploadDate, referenceDate }) {
   const trimmedTranscript = sanitizeTranscriptForPrompt(transcript);
   if (!trimmedTranscript) {
-    throw new Error('Transcript unavailable for this video.');
+    throw new Error('Source text unavailable for this content.');
   }
-  const safeTitle = typeof title === 'string' && title.trim() ? title.trim() : 'Untitled video';
+  const safeTitle = typeof title === 'string' && title.trim() ? title.trim() : 'Untitled content';
   const safeUrl = typeof url === 'string' && url.trim() ? url.trim() : 'Unknown';
-  const safeCreator = typeof creator === 'string' && creator.trim() ? creator.trim() : 'Unknown Creator';
+  const safeSource = typeof creator === 'string' && creator.trim() ? creator.trim() : 'Unknown source';
   const formattedUploadDate = formatDateForPrompt(uploadDate) || 'Unknown';
   const formattedReferenceDate = formatDateForPrompt(referenceDate) || formatDateForPrompt(new Date());
-  const overviewCount = sanitizeNumber(settings.overviewSentences, DEFAULT_SETTINGS.overviewSentences, 1, 10);
-  const includeTakeaways = Boolean(settings.includeTakeaways);
-  const includeActionSteps = Boolean(settings.includeActionSteps);
-  const responseLanguage = settings.responseLanguage?.trim() || DEFAULT_SETTINGS.responseLanguage;
 
   const customLines = settings.customInstructions
     ? settings.customInstructions
@@ -1250,22 +1242,16 @@ function buildPrompt({ title, url, transcript, settings, creator, uploadDate, re
   const instructionsSegments = [];
   if (customLines.length) {
     instructionsSegments.push(customLines.join(' '));
+  } else {
+    instructionsSegments.push('Provide a concise, fact-checked summary of the content.');
   }
-  instructionsSegments.push(`Please give me a concise overview in ${overviewCount} sentence${overviewCount === 1 ? '' : 's'}.`);
-  if (includeTakeaways) {
-    instructionsSegments.push('After that, add a bulleted list of the main takeaways.');
-  }
-  if (includeActionSteps) {
-    instructionsSegments.push('Call out any actionable steps or recommendations in their own short section.');
-  }
-  instructionsSegments.push(`Write the entire response in ${responseLanguage}.`);
-  instructionsSegments.push('Use the transcript below as your source material.');
+  instructionsSegments.push('Use the text below as your source material.');
 
   const metadataLines = [
     `Link: ${quoteForPrompt(safeUrl)}`,
     `Title: ${quoteForPrompt(safeTitle)}`,
-    `Creator: ${quoteForPrompt(safeCreator)}`,
-    `Uploaded: ${quoteForPrompt(formattedUploadDate)}`,
+    `Source: ${quoteForPrompt(safeSource)}`,
+    `Published: ${quoteForPrompt(formattedUploadDate)}`,
     `Date: ${quoteForPrompt(formattedReferenceDate)}`
   ].join('\n');
 
@@ -1654,17 +1640,17 @@ function sanitizeTranscriptForPrompt(transcript) {
 
 function buildPromptPreview(settings) {
   const previewTranscript = [
-    '[00:00] {{transcript_line_1}}',
-    '[00:45] {{transcript_line_2}}',
-    '[01:30] {{transcript_line_3}}'
+    '[00:00] {{content_line_1}}',
+    '[00:45] {{content_line_2}}',
+    '[01:30] {{content_line_3}}'
   ].join('\n');
   return buildPrompt({
-    title: '{{video_title}}',
-    url: 'https://www.youtube.com/watch?v={{video_id}}',
+    title: '{{content_title}}',
+    url: '{{source_url}}',
     transcript: previewTranscript,
     settings,
-    creator: '{{channel_name}}',
-    uploadDate: '{{upload_date}}',
+    creator: '{{content_source}}',
+    uploadDate: '{{published_date}}',
     referenceDate: '{{current_date}}'
   });
 }
@@ -1686,7 +1672,7 @@ async function fetchTranscript(videoUrl) {
         return;
       }
 
-      const errorMessage = response?.error || 'Transcript unavailable for this video.';
+      const errorMessage = response?.error || 'Source text unavailable for this content.';
       reject(new Error(errorMessage));
     });
   });
@@ -2303,16 +2289,15 @@ function sanitizeSettings(raw) {
   }
 
   settings.preferredChatHost = sanitizeHost(raw.preferredChatHost, DEFAULT_SETTINGS.preferredChatHost);
-  settings.overviewSentences = sanitizeNumber(
-    raw.overviewSentences,
-    DEFAULT_SETTINGS.overviewSentences,
-    1,
-    10
+  const sanitizedInstructions = sanitizeMultilineString(
+    raw.customInstructions,
+    DEFAULT_SETTINGS.customInstructions
   );
-  settings.includeTakeaways = sanitizeBoolean(raw.includeTakeaways, DEFAULT_SETTINGS.includeTakeaways);
-  settings.includeActionSteps = sanitizeBoolean(raw.includeActionSteps, DEFAULT_SETTINGS.includeActionSteps);
-  settings.responseLanguage = sanitizeString(raw.responseLanguage, DEFAULT_SETTINGS.responseLanguage);
-  settings.customInstructions = sanitizeMultilineString(raw.customInstructions, DEFAULT_SETTINGS.customInstructions);
+  if (sanitizedInstructions.trim() === 'You are helping me summarize a YouTube video.') {
+    settings.customInstructions = DEFAULT_SETTINGS.customInstructions;
+  } else {
+    settings.customInstructions = sanitizedInstructions;
+  }
   settings.autoSendPrompt = sanitizeBoolean(raw.autoSendPrompt, DEFAULT_SETTINGS.autoSendPrompt);
 
   return settings;
@@ -2320,24 +2305,16 @@ function sanitizeSettings(raw) {
 
 function sanitizeHost(value, fallback) {
   if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'chat.openai.com') {
-      return 'chat.openai.com';
-    }
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/.*/, '');
     if (normalized === 'chatgpt.com') {
       return 'chatgpt.com';
     }
   }
   return fallback;
-}
-
-function sanitizeNumber(value, fallback, min, max) {
-  const numeric = Number.parseInt(value, 10);
-  if (Number.isNaN(numeric)) {
-    return fallback;
-  }
-  const clamped = Math.min(Math.max(numeric, min), max);
-  return clamped;
 }
 
 function sanitizeBoolean(value, fallback) {
@@ -2351,14 +2328,6 @@ function sanitizeBoolean(value, fallback) {
     return false;
   }
   return fallback;
-}
-
-function sanitizeString(value, fallback) {
-  if (typeof value !== 'string') {
-    return fallback;
-  }
-  const trimmed = value.trim();
-  return trimmed || fallback;
 }
 
 function sanitizeMultilineString(value, fallback) {
@@ -2400,45 +2369,14 @@ function ensureSettingsPanel() {
   const form = document.createElement('form');
 
   const hostLabel = document.createElement('label');
-  hostLabel.textContent = 'Preferred ChatGPT domain';
+  hostLabel.textContent = 'Preferred Domain';
   const hostSelect = document.createElement('select');
   hostSelect.name = 'preferredChatHost';
   const optionChatGPT = document.createElement('option');
   optionChatGPT.value = 'chatgpt.com';
   optionChatGPT.textContent = 'chatgpt.com';
-  const optionChatOpenAI = document.createElement('option');
-  optionChatOpenAI.value = 'chat.openai.com';
-  optionChatOpenAI.textContent = 'chat.openai.com';
-  hostSelect.append(optionChatGPT, optionChatOpenAI);
+  hostSelect.append(optionChatGPT);
   hostLabel.appendChild(hostSelect);
-
-  const overviewLabel = document.createElement('label');
-  overviewLabel.textContent = 'Overview sentence count';
-  const overviewInput = document.createElement('input');
-  overviewInput.type = 'number';
-  overviewInput.name = 'overviewSentences';
-  overviewInput.min = '1';
-  overviewInput.max = '10';
-  overviewInput.step = '1';
-  overviewLabel.appendChild(overviewInput);
-
-  const takeawaysLabel = document.createElement('label');
-  takeawaysLabel.className = 'ytlm-checkbox';
-  const takeawaysCheckbox = document.createElement('input');
-  takeawaysCheckbox.type = 'checkbox';
-  takeawaysCheckbox.name = 'includeTakeaways';
-  const takeawaysText = document.createElement('span');
-  takeawaysText.textContent = 'Include key takeaways list';
-  takeawaysLabel.append(takeawaysCheckbox, takeawaysText);
-
-  const actionLabel = document.createElement('label');
-  actionLabel.className = 'ytlm-checkbox';
-  const actionCheckbox = document.createElement('input');
-  actionCheckbox.type = 'checkbox';
-  actionCheckbox.name = 'includeActionSteps';
-  const actionText = document.createElement('span');
-  actionText.textContent = 'Include actionable steps';
-  actionLabel.append(actionCheckbox, actionText);
 
   const autoSendLabel = document.createElement('label');
   autoSendLabel.className = 'ytlm-checkbox';
@@ -2449,15 +2387,8 @@ function ensureSettingsPanel() {
   autoSendText.textContent = 'Send prompt to ChatGPT automatically';
   autoSendLabel.append(autoSendCheckbox, autoSendText);
 
-  const languageLabel = document.createElement('label');
-  languageLabel.textContent = 'Preferred response language';
-  const languageInput = document.createElement('input');
-  languageInput.type = 'text';
-  languageInput.name = 'responseLanguage';
-  languageLabel.appendChild(languageInput);
-
   const instructionsLabel = document.createElement('label');
-  instructionsLabel.textContent = 'Custom instruction lines (one per line)';
+  instructionsLabel.textContent = 'Custom Instructions';
   const instructionsTextarea = document.createElement('textarea');
   instructionsTextarea.name = 'customInstructions';
   instructionsLabel.appendChild(instructionsTextarea);
@@ -2480,7 +2411,7 @@ function ensureSettingsPanel() {
   previewTextarea.rows = 10;
   const previewNote = document.createElement('p');
   previewNote.className = 'ytlm-preview-note';
-  previewNote.textContent = 'Placeholders such as {{video_title}} and {{transcript_line_1}} will be replaced with real video details when the prompt is sent.';
+  previewNote.textContent = 'Placeholders such as {{content_title}} and {{content_line_1}} will be replaced with real content details when the prompt is sent.';
   previewContainer.append(previewHeader, previewTextarea, previewNote);
 
   const actionsRow = document.createElement('div');
@@ -2489,29 +2420,23 @@ function ensureSettingsPanel() {
   saveButton.type = 'submit';
   saveButton.className = 'ytlm-primary';
   saveButton.textContent = 'Save';
+  const resetButton = document.createElement('button');
+  resetButton.type = 'button';
+  resetButton.className = 'ytlm-secondary';
+  resetButton.textContent = 'Reset to default';
   const closeActionButton = document.createElement('button');
   closeActionButton.type = 'button';
   closeActionButton.className = 'ytlm-secondary';
   closeActionButton.textContent = 'Close';
   closeActionButton.addEventListener('click', closeSettingsPanel);
-  actionsRow.append(saveButton, closeActionButton);
+  actionsRow.append(saveButton, resetButton, closeActionButton);
 
   const status = document.createElement('p');
   status.className = 'ytlm-settings-status';
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
 
-  form.append(
-    hostLabel,
-    overviewLabel,
-    takeawaysLabel,
-    actionLabel,
-    autoSendLabel,
-    languageLabel,
-    instructionsLabel,
-    previewContainer,
-    actionsRow
-  );
+  form.append(hostLabel, autoSendLabel, instructionsLabel, previewContainer, actionsRow);
 
   modal.append(closeButton, heading, description, form, status);
   panel.appendChild(modal);
@@ -2525,11 +2450,7 @@ function ensureSettingsPanel() {
     event.preventDefault();
     await handleSettingsSubmit({
       hostSelect,
-      overviewInput,
-      takeawaysCheckbox,
-      actionCheckbox,
       autoSendCheckbox,
-      languageInput,
       instructionsTextarea,
       saveButton,
       status
@@ -2550,26 +2471,24 @@ function ensureSettingsPanel() {
     status,
     elements: {
       hostSelect,
-      overviewInput,
-      takeawaysCheckbox,
-      actionCheckbox,
       autoSendCheckbox,
-      languageInput,
       instructionsTextarea
     },
     saveButton,
+    resetButton,
     previewTextarea,
     previewCopyButton
   };
 
   const updatePreview = () => updatePromptPreviewFromForm(settingsPanelRefs);
   hostSelect.addEventListener('change', updatePreview);
-  overviewInput.addEventListener('input', updatePreview);
-  takeawaysCheckbox.addEventListener('change', updatePreview);
-  actionCheckbox.addEventListener('change', updatePreview);
-  autoSendCheckbox.addEventListener('change', updatePreview);
-  languageInput.addEventListener('input', updatePreview);
   instructionsTextarea.addEventListener('input', updatePreview);
+
+  resetButton.addEventListener('click', () => {
+    populateSettingsForm(settingsPanelRefs.elements, { ...DEFAULT_SETTINGS });
+    updatePromptPreviewFromForm(settingsPanelRefs);
+    setStatusMessage(status, 'Defaults restored. Save to apply.', false);
+  });
 
   if (!(navigator?.clipboard && typeof navigator.clipboard.writeText === 'function')) {
     previewCopyButton.disabled = true;
@@ -2627,13 +2546,18 @@ function closeSettingsPanel() {
 }
 
 function populateSettingsForm(elements, settings) {
-  elements.hostSelect.value = settings.preferredChatHost;
-  elements.overviewInput.value = settings.overviewSentences;
-  elements.takeawaysCheckbox.checked = settings.includeTakeaways;
-  elements.actionCheckbox.checked = settings.includeActionSteps;
-  elements.autoSendCheckbox.checked = settings.autoSendPrompt;
-  elements.languageInput.value = settings.responseLanguage;
-  elements.instructionsTextarea.value = settings.customInstructions;
+  if (!elements) {
+    return;
+  }
+  if (elements.hostSelect) {
+    elements.hostSelect.value = settings.preferredChatHost;
+  }
+  if (elements.autoSendCheckbox) {
+    elements.autoSendCheckbox.checked = settings.autoSendPrompt;
+  }
+  if (elements.instructionsTextarea) {
+    elements.instructionsTextarea.value = settings.customInstructions;
+  }
 }
 
 function collectSettingsFromElements(elements) {
@@ -2643,11 +2567,7 @@ function collectSettingsFromElements(elements) {
 
   return sanitizeSettings({
     preferredChatHost: elements.hostSelect?.value,
-    overviewSentences: elements.overviewInput?.value,
-    includeTakeaways: elements.takeawaysCheckbox?.checked,
-    includeActionSteps: elements.actionCheckbox?.checked,
     autoSendPrompt: elements.autoSendCheckbox?.checked,
-    responseLanguage: elements.languageInput?.value,
     customInstructions: elements.instructionsTextarea?.value
   });
 }
@@ -2662,24 +2582,10 @@ function updatePromptPreviewFromForm(refs) {
   refs.previewTextarea.scrollTop = 0;
 }
 
-async function handleSettingsSubmit({
-  hostSelect,
-  overviewInput,
-  takeawaysCheckbox,
-  actionCheckbox,
-  autoSendCheckbox,
-  languageInput,
-  instructionsTextarea,
-  saveButton,
-  status
-}) {
+async function handleSettingsSubmit({ hostSelect, autoSendCheckbox, instructionsTextarea, saveButton, status }) {
   const updated = {
     preferredChatHost: hostSelect.value,
-    overviewSentences: sanitizeNumber(overviewInput.value, currentSettings.overviewSentences, 1, 10),
-    includeTakeaways: takeawaysCheckbox.checked,
-    includeActionSteps: actionCheckbox.checked,
     autoSendPrompt: autoSendCheckbox.checked,
-    responseLanguage: sanitizeString(languageInput.value, currentSettings.responseLanguage),
     customInstructions: instructionsTextarea.value
   };
 
