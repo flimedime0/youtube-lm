@@ -1370,6 +1370,7 @@ function sanitizeTranscriptForPrompt(transcript) {
   let firstLine = firstLineBreakIndex === -1 ? normalizedText : normalizedText.slice(0, firstLineBreakIndex);
   let firstLineMatches = [...firstLine.matchAll(new RegExp(marketingMarkerPattern, 'g'))];
   let removedFirstMarkerLineViaHardCut = false;
+  let removedMarkerLineViaPrefixDrop = false;
 
   // Hard-cut header: if the first line contains ≥2 marketing markers (Share/Download/Copy),
   // drop EVERYTHING before the *last* marker so the first token is the spoken text (e.g., "Daniel.")
@@ -1443,6 +1444,7 @@ function sanitizeTranscriptForPrompt(transcript) {
     normalizedText = restOfFirstLine
       ? `${restOfFirstLine}${remainder ? `\n${remainder}` : ''}`
       : remainder;
+    removedMarkerLineViaPrefixDrop = true;
   }
 
   // Always try to isolate markers; we'll still gate with shouldIsolateMarker(...)
@@ -1592,7 +1594,7 @@ function sanitizeTranscriptForPrompt(transcript) {
 
   let markerLineIndices = buildMarkerLineIndices();
 
-  if (markerLineIndices.length === 0 && sawAnyMarketingMarker) {
+  if (markerLineIndices.length === 0 && removedMarkerLineViaPrefixDrop && sawAnyMarketingMarker) {
     const droppedMetadata = dropLeadingMetadataEntries();
     if (droppedMetadata) {
       markerLineIndices = buildMarkerLineIndices();
