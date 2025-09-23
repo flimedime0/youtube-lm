@@ -1311,7 +1311,7 @@ function sanitizeTranscriptForPrompt(transcript) {
 
   const shareMarkerCorePattern = `${shareKeywordPattern}${whitespaceOrZeroWidthPattern}${videoKeywordPattern}${markerBoundaryLookahead}`;
   const downloadMarkerCorePattern =
-    `${downloadKeywordPattern}${optionalWhitespaceOrZeroWidthPattern}(?:\\.[^\\s${zeroWidthCharacters}]+?${markerContinuationLookahead}|${downloadTrailingWordPattern}${markerContinuationLookahead})`;
+    `${downloadKeywordPattern}${optionalWhitespaceOrZeroWidthPattern}(?:\\.${zeroWidthOptionalPattern}(?:[^\\s${zeroWidthCharacters}]${zeroWidthOptionalPattern})+?${markerContinuationLookahead}|${downloadTrailingWordPattern}${markerContinuationLookahead})`;
   const copyMarkerCorePattern = `${copyKeywordPattern}${markerBoundaryLookahead}`;
   const marketingMarkerPattern = `(?:${shareMarkerCorePattern}|${downloadMarkerCorePattern}|${copyMarkerCorePattern})`;
   const markerSeparatorCharacters =
