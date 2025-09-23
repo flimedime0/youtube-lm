@@ -864,17 +864,29 @@ async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false)
 
   let didInject = hasInjected === true || promptAlreadyApplied;
 
+  let composerReadyForSend = true;
+
   if (!promptAlreadyApplied) {
     if (!applyPromptToComposer(composer, prompt)) {
       return { status: 'permanent-failure', reason: 'Unable to write prompt into composer.', hasInjected: hasInjected === true };
     }
     didInject = true;
+
+    if (shouldAutoSend) {
+      composerReadyForSend = await ensureComposerReflectsPrompt(composer, normalizedPrompt);
+    }
   }
 
   if (!shouldAutoSend) {
     focusComposer(composer);
     placeCaretAtEnd(composer);
     return { status: 'success', mode: 'manual', hasInjected: didInject };
+  }
+
+  if (!composerReadyForSend) {
+    focusComposer(composer);
+    placeCaretAtEnd(composer);
+    return { status: 'manual-complete', reason: 'Composer did not stabilize before auto-send.', hasInjected: didInject, mode: 'manual' };
   }
 
   const sendSucceeded = await attemptAutoSend(composer, 5, 200);
@@ -1330,6 +1342,35 @@ async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false)
       }
     }
     return false;
+  }
+
+  async function ensureComposerReflectsPrompt(element, expectedValue) {
+    const normalizedExpected = normalizeText(expectedValue);
+    if (!normalizedExpected) {
+      return false;
+    }
+
+    let confirmed = false;
+    const maxChecks = 5;
+    for (let check = 0; check < maxChecks; check += 1) {
+      await wait(check === 0 ? 50 : 25);
+      if (!element || !element.isConnected) {
+        break;
+      }
+
+      const current = normalizeText(getComposerText(element));
+      if (current !== normalizedExpected) {
+        confirmed = false;
+        continue;
+      }
+
+      if (confirmed) {
+        return true;
+      }
+      confirmed = true;
+    }
+
+    return confirmed;
   }
 
   function wait(ms) {
