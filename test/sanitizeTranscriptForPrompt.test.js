@@ -107,6 +107,26 @@ test('sanitizeTranscriptForPrompt strips zero-width separator characters around 
   );
 });
 
+test('sanitizeTranscriptForPrompt handles zero-width characters inside marker words', () => {
+  const zeroWidthJoiner = '\u200d';
+  const shareWord = ['S', 'h', 'a', 'r', 'e'].join(zeroWidthJoiner);
+  const videoWord = ['V', 'i', 'd', 'e', 'o'].join(zeroWidthJoiner);
+  const downloadWord = ['D', 'o', 'w', 'n', 'l', 'o', 'a', 'd'].join(zeroWidthJoiner);
+  const copyWord = ['C', 'o', 'p', 'y'].join(zeroWidthJoiner);
+  const rawTranscript = [
+    `Understanding AI in 2024 • Jan 5, 2024 • by Daniel Johnson ${shareWord} ${videoWord}${zeroWidthJoiner}${downloadWord} .srt${zeroWidthJoiner}${copyWord}`,
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.strictEqual(
+    sanitized,
+    'Daniel: Welcome back everyone.\nSarah: Thanks for having me!'
+  );
+});
+
 test('sanitizeTranscriptForPrompt preserves zero-width characters in body content', () => {
   const zeroWidthNonJoiner = '\u200c';
   const zeroWidthJoiner = '\u200d';

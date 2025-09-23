@@ -1294,13 +1294,24 @@ function sanitizeTranscriptForPrompt(transcript) {
   const zeroWidthOptionalPattern = `[${zeroWidthCharacters}]*`;
   const whitespaceOrZeroWidthPattern = `(?:\\s|[${zeroWidthCharacters}])+`;
   const optionalWhitespaceOrZeroWidthPattern = `(?:\\s|[${zeroWidthCharacters}])*`;
+  const escapeForRegex = (value) => value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+  const allowZeroWidthInKeyword = (value) =>
+    `${zeroWidthOptionalPattern}${Array.from(value)
+      .map((character) => `${escapeForRegex(character)}${zeroWidthOptionalPattern}`)
+      .join('')}`;
+  const shareKeywordPattern = allowZeroWidthInKeyword('Share');
+  const downloadKeywordPattern = allowZeroWidthInKeyword('Download');
+  const copyKeywordPattern = allowZeroWidthInKeyword('Copy');
+  const videoKeywordPattern = allowZeroWidthInKeyword('Video');
   const markerBoundaryLookahead = `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|[A-Z]))`;
-  const markerContinuationLookahead = `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|Copy|Share|Download))`;
-  
-  const shareMarkerCorePattern = `Share${zeroWidthOptionalPattern}${whitespaceOrZeroWidthPattern}Video${markerBoundaryLookahead}`;
+  const markerContinuationLookahead =
+    `(?=${zeroWidthOptionalPattern}(?:\\s|$|[.,;:?!]|${copyKeywordPattern}|${shareKeywordPattern}|${downloadKeywordPattern}))`;
+  const downloadTrailingWordPattern = `(?:[A-Za-z]${zeroWidthOptionalPattern})+?`;
+
+  const shareMarkerCorePattern = `${shareKeywordPattern}${whitespaceOrZeroWidthPattern}${videoKeywordPattern}${markerBoundaryLookahead}`;
   const downloadMarkerCorePattern =
-    `Download${zeroWidthOptionalPattern}${optionalWhitespaceOrZeroWidthPattern}(?:\\.[^\\s${zeroWidthCharacters}]+?${markerContinuationLookahead}|[A-Za-z]+?${markerContinuationLookahead})`;
-  const copyMarkerCorePattern = `Copy${markerBoundaryLookahead}`;
+    `${downloadKeywordPattern}${optionalWhitespaceOrZeroWidthPattern}(?:\\.[^\\s${zeroWidthCharacters}]+?${markerContinuationLookahead}|${downloadTrailingWordPattern}${markerContinuationLookahead})`;
+  const copyMarkerCorePattern = `${copyKeywordPattern}${markerBoundaryLookahead}`;
   const marketingMarkerPattern = `(?:${shareMarkerCorePattern}|${downloadMarkerCorePattern}|${copyMarkerCorePattern})`;
   const markerSeparatorCharacters =
     `\\\\s\\u00a0${zeroWidthCharacters}&•*·\\-–—|/\\\\.,;:?!()\\[\\]"'`;
