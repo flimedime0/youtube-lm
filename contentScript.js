@@ -1285,8 +1285,11 @@ function sanitizeTranscriptForPrompt(transcript) {
     return '';
   }
 
+  // Include bidi controls so markers & separators still match when decorated
   const zeroWidthCharacters =
-    '\\u200b\\u200c\\u200d\\u200e\\u200f\\u2060\\ufeff\\u061c\\u202a\\u202b\\u202c\\u202d\\u202e';
+    '\\u200b\\u200c\\u200d\\u200e\\u200f\\u2060\\ufeff' + // ZWSP,ZWNJ,ZWJ,LRM,RLM,WJ,BOM
+    '\\u061c' + // ALM
+    '\\u202a\\u202b\\u202c\\u202d\\u202e'; // LRE,RLE,PDF,LRO,RLO
   const zeroWidthCharsRegex = new RegExp(`[${zeroWidthCharacters}]`, 'g');
   const stripZeroWidth = (value) => value.replace(zeroWidthCharsRegex, '');
 
@@ -1362,10 +1365,27 @@ function sanitizeTranscriptForPrompt(transcript) {
     return true;
   };
 
-  const firstLineBreakIndex = normalizedText.indexOf('\n');
-  const firstLine =
-    firstLineBreakIndex === -1 ? normalizedText : normalizedText.slice(0, firstLineBreakIndex);
-  const firstLineMatches = [...firstLine.matchAll(new RegExp(marketingMarkerPattern, 'g'))];
+  let firstLineBreakIndex = normalizedText.indexOf('\n');
+  let firstLine = firstLineBreakIndex === -1 ? normalizedText : normalizedText.slice(0, firstLineBreakIndex);
+  let firstLineMatches = [...firstLine.matchAll(new RegExp(marketingMarkerPattern, 'g'))];
+
+  // Hard-cut header: if the first line contains ≥2 marketing markers (Share/Download/Copy),
+  // drop EVERYTHING before the *last* marker so the first token is the spoken text (e.g., "Daniel.")
+  if (firstLineMatches.length >= 2) {
+    const lastMatch = firstLineMatches[firstLineMatches.length - 1];
+    const restOfFirstLine = firstLine
+      .slice(lastMatch.index + lastMatch[0].length)
+      .replace(new RegExp(`^[\\s\\u00a0${zeroWidthCharacters}]+`, 'u'), '');
+    const remainder = firstLineBreakIndex === -1 ? '' : normalizedText.slice(firstLineBreakIndex + 1);
+    normalizedText = restOfFirstLine
+      ? `${restOfFirstLine}${remainder ? `\n${remainder}` : ''}`
+      : remainder;
+
+    firstLineBreakIndex = normalizedText.indexOf('\n');
+    firstLine = firstLineBreakIndex === -1 ? normalizedText : normalizedText.slice(0, firstLineBreakIndex);
+    firstLineMatches = [...firstLine.matchAll(new RegExp(marketingMarkerPattern, 'g'))];
+  }
+
   const shouldDropFirstLinePrefix = (() => {
     if (firstLineMatches.length === 0) {
       return false;
@@ -1422,21 +1442,21 @@ function sanitizeTranscriptForPrompt(transcript) {
       : remainder;
   }
 
+  // Always try to isolate markers; we'll still gate with shouldIsolateMarker(...)
   const marketingBreakPatterns = [
-    new RegExp(`(^|[^A-Za-z0-9])?(${shareMarkerCorePattern})`, 'g'),
-    new RegExp(`(^|[^A-Za-z0-9])?(${downloadMarkerCorePattern})`, 'g'),
-    new RegExp(`(^|[^A-Za-z0-9])?(${copyMarkerCorePattern})`, 'g')
+    new RegExp(`(${shareMarkerCorePattern})`, 'g'),
+    new RegExp(`(${downloadMarkerCorePattern})`, 'g'),
+    new RegExp(`(${copyMarkerCorePattern})`, 'g')
   ];
 
   let processedText = normalizedText;
   for (const pattern of marketingBreakPatterns) {
-    processedText = processedText.replace(pattern, (_, prefix, marker) => {
-      const safePrefix = prefix === undefined ? '' : prefix;
-      const safeMarker = marker === undefined ? '' : marker;
+    processedText = processedText.replace(pattern, (match, marker) => {
+      const safeMarker = marker === undefined ? match : marker;
       if (!shouldIsolateMarker(safeMarker)) {
-        return `${safePrefix}${safeMarker}`;
+        return safeMarker;
       }
-      return `${safePrefix}\n${safeMarker}\n`;
+      return `\n${safeMarker}\n`;
     });
   }
 
