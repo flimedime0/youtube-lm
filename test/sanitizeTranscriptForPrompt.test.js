@@ -148,6 +148,28 @@ test('sanitizeTranscriptForPrompt handles directional zero-width marks inside ma
   );
 });
 
+test('sanitizeTranscriptForPrompt strips additional bidi formatting characters in markers', () => {
+  const arabicLetterMark = '\u061c';
+  const leftToRightEmbedding = '\u202a';
+  const popDirectionalFormatting = '\u202c';
+  const leftToRightOverride = '\u202d';
+  const rightToLeftOverride = '\u202e';
+  const markersLine = `Share${leftToRightEmbedding} Video${popDirectionalFormatting}Download ${leftToRightOverride}.srt${popDirectionalFormatting}Copy${rightToLeftOverride}`;
+  const inlineMarkersLine = `${arabicLetterMark}Understanding AI in 2024${arabicLetterMark} ${markersLine}Daniel.`;
+  const rawTranscript = [
+    inlineMarkersLine,
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.ok(
+    sanitized.startsWith('Daniel.'),
+    `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
+  );
+});
+
 test('sanitizeTranscriptForPrompt preserves zero-width characters in body content', () => {
   const zeroWidthNonJoiner = '\u200c';
   const zeroWidthJoiner = '\u200d';
