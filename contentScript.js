@@ -1485,6 +1485,48 @@ function sanitizeTranscriptForPrompt(transcript) {
     return { line, headerCandidate, headerKey, comparisonKey };
   });
 
+  const looksLikeMetadataEntry = (entry) => {
+    const { headerCandidate } = entry;
+    if (!headerCandidate) {
+      return false;
+    }
+
+    if (/^by\s+/i.test(headerCandidate)) {
+      return true;
+    }
+
+    if (/[#@]/.test(headerCandidate) || headerCandidate.includes('•')) {
+      return true;
+    }
+
+    if (
+      /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i.test(
+        headerCandidate
+      )
+    ) {
+      return true;
+    }
+
+    return false;
+  };
+
+  const isMarketingEntry = (entry) => {
+    const { headerCandidate, headerKey, comparisonKey } = entry;
+    if (!comparisonKey) {
+      return true;
+    }
+
+    const hasSummaryPrefix = headerKey && headerKey.startsWith('summary');
+    const containsMarketingKeyword =
+      headerKey && marketingKeywordFragments.some((keyword) => headerKey.includes(keyword));
+
+    return (
+      marketingPrefixes.some((pattern) => pattern.test(headerCandidate)) ||
+      (headerKey && (marketingExactMatches.has(headerKey) || isDownloadHeader(headerKey))) ||
+      (hasSummaryPrefix && (headerKey === 'summary' || containsMarketingKeyword))
+    );
+  };
+
   const markerLineIndices = [];
   for (let index = 0; index < lineData.length; index += 1) {
     const { headerKey } = lineData[index];
@@ -1511,12 +1553,21 @@ function sanitizeTranscriptForPrompt(transcript) {
     );
 
     if (firstMarkerIndex > 0 && firstMarkerIndex <= 6 && hasCloseMarker) {
-      startIndex = firstMarkerIndex;
+      const precedingEntries = lineData.slice(0, firstMarkerIndex);
+      const precedingLinesAreMetadata =
+        precedingEntries.length > 0 &&
+        precedingEntries.every((entry) => isMarketingEntry(entry) || looksLikeMetadataEntry(entry)) &&
+        precedingEntries.some((entry) => looksLikeMetadataEntry(entry));
+
+      if (precedingLinesAreMetadata) {
+        startIndex = firstMarkerIndex;
+      }
     }
   }
 
   while (startIndex < lineData.length) {
-    const { headerCandidate, headerKey, comparisonKey } = lineData[startIndex];
+    const entry = lineData[startIndex];
+    const { comparisonKey } = entry;
 
     let duplicateCount = 1;
     while (
@@ -1532,16 +1583,7 @@ function sanitizeTranscriptForPrompt(transcript) {
       continue;
     }
 
-    const hasSummaryPrefix = headerKey && headerKey.startsWith('summary');
-    const containsMarketingKeyword =
-      headerKey && marketingKeywordFragments.some((keyword) => headerKey.includes(keyword));
-
-    const isMarketingLine =
-      !comparisonKey ||
-      marketingPrefixes.some((pattern) => pattern.test(headerCandidate)) ||
-      (headerKey && (marketingExactMatches.has(headerKey) || isDownloadHeader(headerKey))) ||
-      (hasSummaryPrefix && (headerKey === 'summary' || containsMarketingKeyword));
-    if (isMarketingLine) {
+    if (isMarketingEntry(entry)) {
       startIndex += 1;
       continue;
     }
