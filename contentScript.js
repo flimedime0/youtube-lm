@@ -1285,7 +1285,8 @@ function sanitizeTranscriptForPrompt(transcript) {
     return '';
   }
 
-  const zeroWidthCharacters = '\\u200b\\u200c\\u200d\\u200e\\u200f\\u2060\\ufeff';
+  const zeroWidthCharacters =
+    '\\u200b\\u200c\\u200d\\u200e\\u200f\\u2060\\ufeff\\u061c\\u202a\\u202b\\u202c\\u202d\\u202e';
   const zeroWidthCharsRegex = new RegExp(`[${zeroWidthCharacters}]`, 'g');
   const stripZeroWidth = (value) => value.replace(zeroWidthCharsRegex, '');
 
