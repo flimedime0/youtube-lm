@@ -63,6 +63,14 @@ test('sanitizeTranscriptForPrompt drops metadata left behind by hard-cut removal
   );
 });
 
+test('sanitizeTranscriptForPrompt preserves opening dialogue when no markers exist', () => {
+  const rawTranscript = ['October 3rd we set sail at dawn', 'Second line of dialogue'].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.strictEqual(sanitized, 'October 3rd we set sail at dawn\nSecond line of dialogue');
+});
+
 test('sanitizeTranscriptForPrompt removes single-line Glasp header boilerplate', () => {
   const rawTranscript = [
     '& SummaryPOV: If Tag this to revisit later. Share VideoDownload .srtCopy',
