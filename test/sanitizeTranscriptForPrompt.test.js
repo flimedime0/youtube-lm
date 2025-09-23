@@ -170,6 +170,23 @@ test('sanitizeTranscriptForPrompt strips additional bidi formatting characters i
   );
 });
 
+test('sanitizeTranscriptForPrompt removes headers when download suffix has embedded bidi marks', () => {
+  const popDirectionalFormatting = '\u202c';
+  const downloadSuffix = `.${popDirectionalFormatting}s${popDirectionalFormatting}r${popDirectionalFormatting}t`;
+  const rawTranscript = [
+    `POV Video Summary ${popDirectionalFormatting}Share VideoDownload ${downloadSuffix}${popDirectionalFormatting}CopyDaniel.`,
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.ok(
+    sanitized.startsWith('Daniel.'),
+    `Expected sanitized transcript to start with "Daniel." but received: ${sanitized}`
+  );
+});
+
 test('sanitizeTranscriptForPrompt preserves zero-width characters in body content', () => {
   const zeroWidthNonJoiner = '\u200c';
   const zeroWidthJoiner = '\u200d';
