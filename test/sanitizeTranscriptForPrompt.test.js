@@ -63,6 +63,23 @@ test('sanitizeTranscriptForPrompt drops metadata left behind by hard-cut removal
   );
 });
 
+test('sanitizeTranscriptForPrompt drops metadata after removing single marker prefix', () => {
+  const rawTranscript = [
+    'Understanding AI in 2024 • Jan 5, 2024 • by Daniel Johnson Share Video',
+    'September 15, 2025',
+    'by The Johnson Brothers',
+    'Daniel: Welcome back everyone.',
+    'Sarah: Thanks for having me!'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.strictEqual(
+    sanitized,
+    'Daniel: Welcome back everyone.\nSarah: Thanks for having me!'
+  );
+});
+
 test('sanitizeTranscriptForPrompt preserves opening dialogue when no markers exist', () => {
   const rawTranscript = ['October 3rd we set sail at dawn', 'Second line of dialogue'].join('\n');
 
