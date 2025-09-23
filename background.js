@@ -694,74 +694,96 @@ function extractJsonObjectFromAssignment(source, marker) {
   }
 
   let cursor = index + marker.length;
-  while (cursor < source.length && /[\s=]+/.test(source[cursor])) {
+  const fallbackPattern = /^(?:window\[(?:"ytInitialPlayerResponse"|'ytInitialPlayerResponse')\]|window\.ytInitialPlayerResponse|ytInitialPlayerResponse)\s*\|\|/;
+
+  while (cursor < source.length) {
+    while (cursor < source.length && /[\s=]+/.test(source[cursor])) {
+      cursor += 1;
+    }
+
+    if (cursor >= source.length) {
+      return null;
+    }
+
+    const remaining = source.slice(cursor);
+    const fallbackMatch = remaining.match(fallbackPattern);
+    if (fallbackMatch) {
+      cursor += fallbackMatch[0].length;
+      continue;
+    }
+
+    if (source.startsWith('JSON.parse', cursor)) {
+      const openParenIndex = source.indexOf('(', cursor);
+      if (openParenIndex === -1) {
+        cursor += 'JSON.parse'.length;
+        continue;
+      }
+
+      let argumentIndex = openParenIndex + 1;
+      while (argumentIndex < source.length && /\s/.test(source[argumentIndex])) {
+        argumentIndex += 1;
+      }
+
+      if (argumentIndex >= source.length) {
+        cursor = openParenIndex + 1;
+        continue;
+      }
+
+      const argumentStart = source[argumentIndex];
+      if (argumentStart === '"' || argumentStart === '\'') {
+        const literal = extractJsStringLiteral(source, argumentIndex);
+        if (literal) {
+          const decoded = decodeJsStringLiteral(literal);
+          if (decoded !== null) {
+            try {
+              return JSON.parse(decoded);
+            } catch (error) {
+              cursor = argumentIndex + literal.length;
+              continue;
+            }
+          }
+          cursor = argumentIndex + literal.length;
+          continue;
+        }
+      }
+
+      cursor = openParenIndex + 1;
+      continue;
+    }
+
+    const firstChar = source[cursor];
+    if (firstChar === '{') {
+      const jsonText = extractBalancedJson(source, cursor);
+      if (jsonText) {
+        try {
+          return JSON.parse(jsonText);
+        } catch (error) {
+          cursor += jsonText.length;
+          continue;
+        }
+      }
+      cursor += 1;
+      continue;
+    }
+
+    if (firstChar === '"' || firstChar === '\'') {
+      const literal = extractJsStringLiteral(source, cursor);
+      if (literal) {
+        const decoded = decodeJsStringLiteral(literal);
+        if (decoded !== null) {
+          try {
+            return JSON.parse(decoded);
+          } catch (error) {
+            cursor += literal.length;
+            continue;
+          }
+        }
+        cursor += literal.length;
+        continue;
+      }
+    }
+
     cursor += 1;
-  }
-
-  if (cursor >= source.length) {
-    return null;
-  }
-
-  const firstChar = source[cursor];
-  if (firstChar === '{') {
-    const jsonText = extractBalancedJson(source, cursor);
-    if (!jsonText) {
-      return null;
-    }
-    try {
-      return JSON.parse(jsonText);
-    } catch (error) {
-      return null;
-    }
-  }
-
-  if (firstChar === '"' || firstChar === '\'') {
-    const literal = extractJsStringLiteral(source, cursor);
-    if (!literal) {
-      return null;
-    }
-    const decoded = decodeJsStringLiteral(literal);
-    if (decoded === null) {
-      return null;
-    }
-    try {
-      return JSON.parse(decoded);
-    } catch (error) {
-      return null;
-    }
-  }
-
-  if (source.startsWith('JSON.parse', cursor)) {
-    const openParenIndex = source.indexOf('(', cursor);
-    if (openParenIndex === -1) {
-      return null;
-    }
-
-    let argumentIndex = openParenIndex + 1;
-    while (argumentIndex < source.length && /\s/.test(source[argumentIndex])) {
-      argumentIndex += 1;
-    }
-
-    if (argumentIndex >= source.length) {
-      return null;
-    }
-
-    const argumentStart = source[argumentIndex];
-    if (argumentStart === '"' || argumentStart === '\'') {
-      const literal = extractJsStringLiteral(source, argumentIndex);
-      if (!literal) {
-        return null;
-      }
-      const decoded = decodeJsStringLiteral(literal);
-      if (decoded === null) {
-        return null;
-      }
-      try {
-        return JSON.parse(decoded);
-      } catch (error) {
-        return null;
-      }
-    }
   }
 
   return null;
@@ -1829,4 +1851,11 @@ async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false)
     }
     return false;
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    extractPlayerResponseFromWatchHtml,
+    extractJsonObjectFromAssignment
+  };
 }
