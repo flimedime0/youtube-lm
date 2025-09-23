@@ -32,7 +32,7 @@ function getButtonLabelForState(state, context) {
 
 const DEFAULT_SETTINGS = {
   preferredChatHost: 'chatgpt.com',
-  customInstructions: 'Fact check and verify every claim and synthesize a summary.',
+  customInstructions: 'Fact check, verify, and synthesize a summary.',
   autoSendPrompt: true
 };
 
@@ -1245,7 +1245,6 @@ function buildPrompt({ title, url, transcript, settings, creator, uploadDate, re
   } else {
     instructionsSegments.push('Provide a concise, fact-checked summary of the content.');
   }
-  instructionsSegments.push('Use the text below as your source material.');
 
   const metadataLines = [
     `Link: ${quoteForPrompt(safeUrl)}`,
@@ -2374,7 +2373,7 @@ function ensureSettingsPanel() {
   hostSelect.name = 'preferredChatHost';
   const optionChatGPT = document.createElement('option');
   optionChatGPT.value = 'chatgpt.com';
-  optionChatGPT.textContent = 'chatgpt.com';
+  optionChatGPT.textContent = 'ChatGPT';
   hostSelect.append(optionChatGPT);
   hostLabel.appendChild(hostSelect);
 
@@ -2384,7 +2383,7 @@ function ensureSettingsPanel() {
   autoSendCheckbox.type = 'checkbox';
   autoSendCheckbox.name = 'autoSendPrompt';
   const autoSendText = document.createElement('span');
-  autoSendText.textContent = 'Send prompt to ChatGPT automatically';
+  autoSendText.textContent = 'Automatically send pasted prompt.';
   autoSendLabel.append(autoSendCheckbox, autoSendText);
 
   const instructionsLabel = document.createElement('label');
@@ -2423,13 +2422,8 @@ function ensureSettingsPanel() {
   const resetButton = document.createElement('button');
   resetButton.type = 'button';
   resetButton.className = 'ytlm-secondary';
-  resetButton.textContent = 'Reset to default';
-  const closeActionButton = document.createElement('button');
-  closeActionButton.type = 'button';
-  closeActionButton.className = 'ytlm-secondary';
-  closeActionButton.textContent = 'Close';
-  closeActionButton.addEventListener('click', closeSettingsPanel);
-  actionsRow.append(saveButton, resetButton, closeActionButton);
+  resetButton.textContent = 'Reset';
+  actionsRow.append(saveButton, resetButton);
 
   const status = document.createElement('p');
   status.className = 'ytlm-settings-status';
@@ -2481,13 +2475,21 @@ function ensureSettingsPanel() {
   };
 
   const updatePreview = () => updatePromptPreviewFromForm(settingsPanelRefs);
-  hostSelect.addEventListener('change', updatePreview);
-  instructionsTextarea.addEventListener('input', updatePreview);
+  const updateUnsavedStatus = () => updateUnsavedChangesStatus(settingsPanelRefs);
+  hostSelect.addEventListener('change', () => {
+    updatePreview();
+    updateUnsavedStatus();
+  });
+  instructionsTextarea.addEventListener('input', () => {
+    updatePreview();
+    updateUnsavedStatus();
+  });
+  autoSendCheckbox.addEventListener('change', updateUnsavedStatus);
 
   resetButton.addEventListener('click', () => {
     populateSettingsForm(settingsPanelRefs.elements, { ...DEFAULT_SETTINGS });
     updatePromptPreviewFromForm(settingsPanelRefs);
-    setStatusMessage(status, 'Defaults restored. Save to apply.', false);
+    updateUnsavedChangesStatus(settingsPanelRefs);
   });
 
   if (!(navigator?.clipboard && typeof navigator.clipboard.writeText === 'function')) {
@@ -2516,6 +2518,7 @@ async function openSettingsPanel() {
   updatePromptPreviewFromForm(refs);
   refs.status.textContent = '';
   refs.status.classList.remove('ytlm-error');
+  updateUnsavedChangesStatus(refs);
 
   refs.panel.classList.add('ytlm-visible');
   refs.panel.setAttribute('aria-hidden', 'false');
@@ -2570,6 +2573,36 @@ function collectSettingsFromElements(elements) {
     autoSendPrompt: elements.autoSendCheckbox?.checked,
     customInstructions: elements.instructionsTextarea?.value
   });
+}
+
+function areSettingsEqual(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+
+  return (
+    a.preferredChatHost === b.preferredChatHost &&
+    a.autoSendPrompt === b.autoSendPrompt &&
+    a.customInstructions === b.customInstructions
+  );
+}
+
+function updateUnsavedChangesStatus(refs) {
+  if (!refs?.status) {
+    return;
+  }
+
+  const formSettings = collectSettingsFromElements(refs.elements);
+  const hasUnsavedChanges = !areSettingsEqual(formSettings, currentSettings);
+
+  if (hasUnsavedChanges) {
+    setStatusMessage(refs.status, 'Save to apply settings.', false);
+    return;
+  }
+
+  if (refs.status.textContent === 'Save to apply settings.') {
+    setStatusMessage(refs.status, '', false);
+  }
 }
 
 function updatePromptPreviewFromForm(refs) {
