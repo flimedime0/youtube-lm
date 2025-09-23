@@ -1215,47 +1215,14 @@ function formatDateForPrompt(value) {
   return '';
 }
 
-function escapeMarkdownText(value) {
+function quoteForPrompt(value) {
   if (value === null || value === undefined) {
-    return '';
+    return '""';
   }
 
-  return String(value)
-    .replace(/\\/g, '\\\\')
-    .replace(/`/g, '\\`');
-}
-
-function formatLinkForMarkdown(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-
-  const stringValue = String(value).trim();
-  if (!stringValue) {
-    return '';
-  }
-
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(stringValue)) {
-    return `<${stringValue}>`;
-  }
-
-  return escapeMarkdownText(stringValue);
-}
-
-function createTranscriptBlock(transcriptText) {
-  const hasBacktickFenceLine = /^```+/m.test(transcriptText);
-  const hasTildeFenceLine = /^~~~+/m.test(transcriptText);
-
-  if (hasBacktickFenceLine && hasTildeFenceLine) {
-    const indented = transcriptText
-      .split('\n')
-      .map((line) => `    ${line}`)
-      .join('\n');
-    return { block: indented, isCodeFence: false };
-  }
-
-  const fence = hasBacktickFenceLine ? '~~~' : '```';
-  return { block: [fence, transcriptText, fence].join('\n'), isCodeFence: true };
+  const stringValue = String(value);
+  const escaped = stringValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
 }
 
 function buildPrompt({ title, url, transcript, settings, creator, uploadDate, referenceDate }) {
@@ -1280,11 +1247,11 @@ function buildPrompt({ title, url, transcript, settings, creator, uploadDate, re
         .filter((line) => line.length > 0)
     : [];
 
-  const instructionsSegments = [
-    ...customLines,
-    `Please give me a concise overview in ${overviewCount} sentence${overviewCount === 1 ? '' : 's'}.`
-  ];
-
+  const instructionsSegments = [];
+  if (customLines.length) {
+    instructionsSegments.push(customLines.join(' '));
+  }
+  instructionsSegments.push(`Please give me a concise overview in ${overviewCount} sentence${overviewCount === 1 ? '' : 's'}.`);
   if (includeTakeaways) {
     instructionsSegments.push('After that, add a bulleted list of the main takeaways.');
   }
@@ -1294,28 +1261,21 @@ function buildPrompt({ title, url, transcript, settings, creator, uploadDate, re
   instructionsSegments.push(`Write the entire response in ${responseLanguage}.`);
   instructionsSegments.push('Use the transcript below as your source material.');
 
-  const metadataSection = [
-    '## Video details',
-    `- **Link:** ${formatLinkForMarkdown(safeUrl)}`,
-    `- **Title:** ${escapeMarkdownText(safeTitle)}`,
-    `- **Creator:** ${escapeMarkdownText(safeCreator)}`,
-    `- **Uploaded:** ${escapeMarkdownText(formattedUploadDate)}`,
-    `- **Date:** ${escapeMarkdownText(formattedReferenceDate)}`
+  const metadataLines = [
+    `Link: ${quoteForPrompt(safeUrl)}`,
+    `Title: ${quoteForPrompt(safeTitle)}`,
+    `Creator: ${quoteForPrompt(safeCreator)}`,
+    `Uploaded: ${quoteForPrompt(formattedUploadDate)}`,
+    `Date: ${quoteForPrompt(formattedReferenceDate)}`
   ].join('\n');
 
-  const instructionsSection = [
-    '## Instructions',
-    ...instructionsSegments
-      .filter((segment) => typeof segment === 'string' && segment.trim().length > 0)
-      .map((segment) => `- ${escapeMarkdownText(segment)}`)
-  ].join('\n');
+  const instructionsText = instructionsSegments.filter((segment) => segment && segment.trim().length > 0).join(' ');
 
-  const transcriptBlock = createTranscriptBlock(trimmedTranscript);
-  const transcriptSection = transcriptBlock.isCodeFence
-    ? ['## Transcript', transcriptBlock.block].join('\n')
-    : ['## Transcript', '', transcriptBlock.block].join('\n');
-
-  const promptSections = [metadataSection, instructionsSection, transcriptSection];
+  const promptSections = [
+    metadataLines,
+    `Instructions: ${quoteForPrompt(instructionsText)}`,
+    `Text: ${quoteForPrompt(trimmedTranscript)}`
+  ];
 
   return promptSections.join('\n\n');
 }
