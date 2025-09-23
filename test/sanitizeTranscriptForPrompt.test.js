@@ -156,3 +156,24 @@ test('sanitizeTranscriptForPrompt keeps regular sentences with marketing keyword
 
   assert.strictEqual(sanitized, rawTranscript);
 });
+
+test('sanitizeTranscriptForPrompt preserves opening dialogue before early markers', () => {
+  const rawTranscript = [
+    'Welcome to the show.',
+    'Share Video',
+    'Download .srt',
+    'Copy',
+    'Host: Let\'s get started.'
+  ].join('\n');
+
+  const sanitized = sanitizeTranscriptForPrompt(rawTranscript);
+
+  assert.ok(
+    sanitized.startsWith('Welcome to the show.'),
+    `Expected sanitized transcript to begin with the opening dialogue but received: ${sanitized}`
+  );
+  assert.ok(
+    sanitized.includes("Host: Let's get started."),
+    'Expected sanitized transcript to retain subsequent dialogue line.'
+  );
+});
