@@ -321,9 +321,18 @@ function ensureContextualActionButton({ id, container, context }) {
   }
 
   button.dataset.ytlmContext = context;
-  button.classList.remove('ytlm-action-button--watch', 'ytlm-action-button--shorts');
+
+  const nativeWatchClasses = [
+    'yt-spec-button-shape-next',
+    'yt-spec-button-shape-next--tonal',
+    'yt-spec-button-shape-next--mono',
+    'yt-spec-button-shape-next--size-m',
+    'yt-spec-button-shape-next--icon-leading'
+  ];
+
+  button.classList.remove('ytlm-action-button--watch', 'ytlm-action-button--shorts', ...nativeWatchClasses);
   if (context === 'watch') {
-    button.classList.add('ytlm-action-button--watch');
+    button.classList.add('ytlm-action-button--watch', ...nativeWatchClasses);
   } else {
     button.classList.add('ytlm-action-button--shorts');
   }
@@ -1688,7 +1697,6 @@ function ensureGlobalStyles() {
       min-height: 36px;
       padding: 0 16px;
       border-radius: 18px;
-      border: 1px solid var(--yt-spec-badge-chip-outline, rgba(0, 0, 0, 0.1));
       background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, 0.04));
       color: var(--yt-spec-text-primary, #0f0f0f);
       font-size: 14px;
@@ -1706,23 +1714,20 @@ function ensureGlobalStyles() {
     ytd-app[dark] .ytlm-action-button--watch,
     html[dark] .ytlm-action-button--watch,
     body[dark] .ytlm-action-button--watch {
-      border-color: rgba(255, 255, 255, 0.16);
-      background: rgba(255, 255, 255, 0.12);
+      background: var(--yt-spec-badge-chip-background, rgba(255, 255, 255, 0.16));
       color: var(--yt-spec-text-primary-inverse, #f1f1f1);
     }
 
     ytd-app[dark] .ytlm-action-button--watch:hover:not(.ytlm-busy),
     html[dark] .ytlm-action-button--watch:hover:not(.ytlm-busy),
     body[dark] .ytlm-action-button--watch:hover:not(.ytlm-busy) {
-      background: rgba(255, 255, 255, 0.18);
-      border-color: rgba(255, 255, 255, 0.16);
+      background: var(--yt-spec-touch-response, rgba(255, 255, 255, 0.18));
     }
 
     ytd-app[dark] .ytlm-action-button--watch:active,
     html[dark] .ytlm-action-button--watch:active,
     body[dark] .ytlm-action-button--watch:active {
-      background: rgba(255, 255, 255, 0.22);
-      border-color: rgba(255, 255, 255, 0.18);
+      background: var(--yt-spec-touch-response, rgba(255, 255, 255, 0.22));
     }
 
     .ytlm-action-button--watch .ytlm-button-icon {
