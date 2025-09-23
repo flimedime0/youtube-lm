@@ -1786,7 +1786,7 @@ function ensureGlobalStyles() {
       width: 48px;
       height: 48px;
       border-radius: 50%;
-      background-color: rgba(0, 0, 0, 0.08);
+      background-color: var(--yt-spec-static-overlay-background-brand, rgba(0, 0, 0, 0.08));
       background-repeat: no-repeat;
       background-position: center;
       background-size: 24px 24px;
@@ -1795,12 +1795,12 @@ function ensureGlobalStyles() {
     }
 
     .ytlm-action-button--shorts:hover:not(.ytlm-busy) .ytlm-button-icon {
-      background-color: rgba(0, 0, 0, 0.14);
+      background-color: var(--yt-spec-static-overlay-background-strong, rgba(0, 0, 0, 0.12));
       transform: translateY(-1px);
     }
 
     .ytlm-action-button--shorts:active .ytlm-button-icon {
-      background-color: rgba(0, 0, 0, 0.18);
+      background-color: var(--yt-spec-static-overlay-background-heavy, rgba(0, 0, 0, 0.16));
       transform: translateY(0);
     }
 
@@ -1809,8 +1809,8 @@ function ensureGlobalStyles() {
       position: absolute;
       inset: 12px;
       border-radius: 50%;
-      border: 3px solid rgba(0, 0, 0, 0.25);
-      border-top-color: rgba(0, 0, 0, 0.6);
+      border: 3px solid var(--yt-spec-static-overlay-background-strong, rgba(0, 0, 0, 0.18));
+      border-top-color: var(--yt-spec-static-overlay-background-heavy, rgba(0, 0, 0, 0.36));
       opacity: 0;
     }
 
@@ -1830,26 +1830,26 @@ function ensureGlobalStyles() {
     ytd-app[dark] .ytlm-action-button--shorts .ytlm-button-icon,
     html[dark] .ytlm-action-button--shorts .ytlm-button-icon,
     body[dark] .ytlm-action-button--shorts .ytlm-button-icon {
-      background-color: rgba(255, 255, 255, 0.24);
+      background-color: var(--yt-spec-static-overlay-background-brand, rgba(255, 255, 255, 0.16));
     }
 
     ytd-app[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy) .ytlm-button-icon,
     html[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy) .ytlm-button-icon,
     body[dark] .ytlm-action-button--shorts:hover:not(.ytlm-busy) .ytlm-button-icon {
-      background-color: rgba(255, 255, 255, 0.32);
+      background-color: var(--yt-spec-static-overlay-background-strong, rgba(255, 255, 255, 0.24));
     }
 
     ytd-app[dark] .ytlm-action-button--shorts:active .ytlm-button-icon,
     html[dark] .ytlm-action-button--shorts:active .ytlm-button-icon,
     body[dark] .ytlm-action-button--shorts:active .ytlm-button-icon {
-      background-color: rgba(255, 255, 255, 0.38);
+      background-color: var(--yt-spec-static-overlay-background-heavy, rgba(255, 255, 255, 0.32));
     }
 
     ytd-app[dark] .ytlm-action-button--shorts .ytlm-button-icon::after,
     html[dark] .ytlm-action-button--shorts .ytlm-button-icon::after,
     body[dark] .ytlm-action-button--shorts .ytlm-button-icon::after {
-      border-color: rgba(255, 255, 255, 0.3);
-      border-top-color: rgba(255, 255, 255, 0.9);
+      border-color: var(--yt-spec-static-overlay-background-strong, rgba(255, 255, 255, 0.28));
+      border-top-color: var(--yt-spec-static-overlay-background-heavy, rgba(255, 255, 255, 0.68));
     }
 
     .ytlm-tooltip {
