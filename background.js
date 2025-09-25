@@ -164,7 +164,10 @@ if (typeof module !== 'undefined' && module.exports) {
     extractPlayerResponseFromWatchHtml,
     extractJsonObjectFromAssignment,
     isConsentInterstitialHtml,
-    buildWatchPageUrl
+    buildWatchPageUrl,
+    fetchTranscriptFromYouTube,
+    parseTimedTextTrackListXml,
+    buildTimedTextRequestFromTrack
   };
 }
 
@@ -957,6 +960,15 @@ async function fetchTranscriptFromYouTube(videoUrl) {
     console.debug('Failed to fetch transcript from watch page', error);
   }
 
+  try {
+    const transcriptFromTrackList = await fetchTranscriptFromTimedTextTrackList(videoId);
+    if (transcriptFromTrackList) {
+      return transcriptFromTrackList;
+    }
+  } catch (error) {
+    console.debug('Failed to fetch transcript via timed text track list', error);
+  }
+
   const paramVariants = ['lang=en&fmt=json3', 'lang=en&kind=asr&fmt=json3', 'lang=en-US&fmt=json3', 'lang=en-US&kind=asr&fmt=json3'];
 
   for (const params of paramVariants) {
@@ -1058,6 +1070,57 @@ async function fetchTranscriptFromWatchPage(videoId) {
   const formatted = parseTimedTextJson(timedTextData);
   if (!formatted) {
     throw new Error('Unable to format timed text transcript from YouTube watch page.');
+  }
+
+  return formatted;
+}
+
+async function fetchTranscriptFromTimedTextTrackList(videoId) {
+  if (!videoId) {
+    return '';
+  }
+
+  const listUrl = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&type=list`;
+
+  const response = await fetch(listUrl, { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`Timed text track list request failed with status ${response.status}`);
+  }
+
+  const xml = await response.text();
+  const tracks = parseTimedTextTrackListXml(xml);
+  if (tracks.length === 0) {
+    throw new Error('Timed text track list did not contain any tracks.');
+  }
+
+  const scoredTracks = tracks
+    .map((track, index) => ({ track, index, score: scoreTimedTextTrack(track) }))
+    .filter((entry) => Number.isFinite(entry.score))
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return a.index - b.index;
+    });
+
+  const bestTrack = scoredTracks[0]?.track;
+  if (!bestTrack) {
+    throw new Error('Unable to select a caption track from the timed text track list.');
+  }
+
+  const requestUrl = buildTimedTextRequestFromTrack(videoId, bestTrack);
+  if (!requestUrl) {
+    throw new Error('Unable to build a timed text request URL from the selected track.');
+  }
+
+  const timedTextData = await fetchTimedTextJson(requestUrl);
+  if (!timedTextData) {
+    throw new Error('Timed text JSON response from track list request was empty.');
+  }
+
+  const formatted = parseTimedTextJson(timedTextData);
+  if (!formatted) {
+    throw new Error('Unable to format timed text transcript from track list request.');
   }
 
   return formatted;
@@ -1563,6 +1626,120 @@ function stripXssiPrefix(text) {
     return '';
   }
   return text.replace(/^\)\]\}'\s*/u, '');
+}
+
+function parseTimedTextTrackListXml(xml) {
+  if (typeof xml !== 'string' || !xml.trim()) {
+    return [];
+  }
+
+  const decoded = xml.replace(/<!DOCTYPE[^>]*>/gi, '').replace(/<!--.*?-->/gs, '');
+  const trackRegex = /<track\s+([^>]+?)\s*\/?>(?:<\/track>)?/gi;
+  const attributeRegex = /([\w-]+)="([^"]*)"/g;
+  const tracks = [];
+
+  let trackMatch;
+  while ((trackMatch = trackRegex.exec(decoded)) !== null) {
+    const attrs = trackMatch[1];
+    const track = {};
+    let attributeMatch;
+    while ((attributeMatch = attributeRegex.exec(attrs)) !== null) {
+      const [, key, value] = attributeMatch;
+      track[key] = decodeHtmlEntity(value);
+    }
+
+    if (typeof track.lang_code === 'string' && track.lang_code.trim()) {
+      tracks.push(track);
+    }
+  }
+
+  return tracks;
+}
+
+function decodeHtmlEntity(value) {
+  return String(value)
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function buildTimedTextRequestFromTrack(videoId, track) {
+  if (!videoId || !track || typeof track !== 'object') {
+    return null;
+  }
+
+  const langCode = typeof track.lang_code === 'string' ? track.lang_code.trim() : '';
+  if (!langCode) {
+    return null;
+  }
+
+  try {
+    const url = new URL('https://www.youtube.com/api/timedtext');
+    url.searchParams.set('v', videoId);
+    url.searchParams.set('fmt', 'json3');
+    url.searchParams.set('lang', langCode);
+
+    const name = typeof track.name === 'string' ? track.name.trim() : '';
+    if (name) {
+      url.searchParams.set('name', name);
+    }
+
+    const kind = typeof track.kind === 'string' ? track.kind.trim() : '';
+    if (kind) {
+      url.searchParams.set('kind', kind);
+    } else if (typeof track.vss_id === 'string' && track.vss_id.toLowerCase().startsWith('a.')) {
+      url.searchParams.set('kind', 'asr');
+    }
+
+    if (typeof track.vss_id === 'string' && track.vss_id.trim()) {
+      url.searchParams.set('vssids', track.vss_id.trim());
+    }
+
+    return url.toString();
+  } catch (error) {
+    return null;
+  }
+}
+
+function scoreTimedTextTrack(track) {
+  if (!track || typeof track !== 'object') {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const langCode = typeof track.lang_code === 'string' ? track.lang_code.toLowerCase() : '';
+  const kind = typeof track.kind === 'string' ? track.kind.toLowerCase() : '';
+  const name = typeof track.name === 'string' ? track.name.toLowerCase() : '';
+  const vssId = typeof track.vss_id === 'string' ? track.vss_id.toLowerCase() : '';
+
+  let score = 0;
+
+  if (langCode === 'en') {
+    score += 40;
+  } else if (langCode.startsWith('en')) {
+    score += 35;
+  } else if (langCode) {
+    score += 10;
+  }
+
+  if (kind === 'asr' || vssId.startsWith('a.')) {
+    score -= 5;
+  }
+
+  if (typeof track.lang_original === 'string' && track.lang_original.toLowerCase().includes('english')) {
+    score += 5;
+  }
+
+  if (name.includes('auto-generated')) {
+    score -= 1;
+  }
+
+  if (track.lang_default === 'true') {
+    score += 3;
+  }
+
+  return score;
 }
 
 function extractVideoIdFromUrl(videoUrl) {
