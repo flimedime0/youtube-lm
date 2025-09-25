@@ -69,6 +69,29 @@ test('extractPlayerResponseFromWatchHtml skips non-JSON assignments and continue
   );
 });
 
+test('extractPlayerResponseFromWatchHtml parses JSON.parse(decodeURIComponent(...)) assignments', () => {
+  const encoded =
+    '%7B%22captions%22%3A%7B%22playerCaptionsTracklistRenderer%22%3A%7B%22captionTracks%22%3A%5B%7B%22baseUrl%22%3A%22https%3A%2F%2Fexample.com%2Fdecode-captions%22%7D%5D%7D%7D%7D';
+  const html = [
+    '<!DOCTYPE html>',
+    '<html>',
+    '  <body>',
+    '    <script>',
+    `      var ytInitialPlayerResponse = JSON.parse(decodeURIComponent("${encoded}"));`,
+    '    </script>',
+    '  </body>',
+    '</html>'
+  ].join('\n');
+
+  const playerResponse = extractPlayerResponseFromWatchHtml(html);
+
+  assert.ok(playerResponse, 'Expected a player response object');
+  assert.deepStrictEqual(
+    playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.[0]?.baseUrl,
+    'https://example.com/decode-captions'
+  );
+});
+
 test('isConsentInterstitialHtml identifies consent interstitial markup', () => {
   const fixturePath = path.join(__dirname, 'fixtures', 'watch-consent.html');
   const html = fs.readFileSync(fixturePath, 'utf8');

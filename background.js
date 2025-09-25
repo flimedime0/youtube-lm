@@ -1271,36 +1271,20 @@ function extractJsonObjectFromAssignment(source, marker) {
           continue;
         }
 
-        let argumentIndex = openParenIndex + 1;
-        while (argumentIndex < source.length && /\s/.test(source[argumentIndex])) {
-          argumentIndex += 1;
-        }
-
-        if (argumentIndex >= source.length) {
-          cursor = openParenIndex + 1;
-          continue;
-        }
-
-        const argumentStart = source[argumentIndex];
-        if (argumentStart === '"' || argumentStart === '\'') {
-          const literal = extractJsStringLiteral(source, argumentIndex);
-          if (!literal) {
-            cursor = argumentIndex + 1;
-            continue;
-          }
-          const decoded = decodeJsStringLiteral(literal);
-          if (decoded !== null) {
+        const argumentInfo = extractJsonParseArgument(source, openParenIndex + 1);
+        if (argumentInfo) {
+          cursor = argumentInfo.cursorAfter;
+          if (argumentInfo.payload !== null) {
             try {
-              return JSON.parse(decoded);
+              return JSON.parse(argumentInfo.payload);
             } catch (error) {
-              // continue scanning when the literal is not valid JSON
+              // continue scanning for additional payloads
             }
           }
-          cursor = argumentIndex + literal.length;
           continue;
         }
 
-        cursor = argumentIndex + 1;
+        cursor = openParenIndex + 1;
         continue;
       }
 
@@ -1318,6 +1302,194 @@ function extractJsonObjectFromAssignment(source, marker) {
     }
 
     searchIndex = index + marker.length;
+  }
+
+  return null;
+}
+
+const JSON_STRING_WRAPPER_SET = new Set(['decodeURIComponent', 'decodeURI', 'unescape', 'atob']);
+
+function extractJsonParseArgument(source, startIndex) {
+  if (typeof source !== 'string' || startIndex >= source.length) {
+    return null;
+  }
+
+  let cursor = startIndex;
+  const wrappers = [];
+
+  while (cursor < source.length) {
+    while (cursor < source.length && /\s/.test(source[cursor])) {
+      cursor += 1;
+    }
+
+    if (cursor >= source.length) {
+      break;
+    }
+
+    const current = source[cursor];
+
+    if (current === '"' || current === '\'') {
+      const literal = extractJsStringLiteral(source, cursor);
+      if (!literal) {
+        return null;
+      }
+
+      cursor += literal.length;
+      const decoded = decodeJsStringLiteral(literal);
+      const payload = decoded === null ? null : applyJsonStringWrappers(decoded, wrappers);
+      const cursorAfter = skipTrailingParensAndWhitespace(source, cursor);
+
+      return {
+        payload,
+        cursorAfter
+      };
+    }
+
+    if (/[A-Za-z_$]/.test(current)) {
+      const identifierStart = cursor;
+      cursor = advancePastIdentifierChain(source, cursor);
+      const identifier = source.slice(identifierStart, cursor);
+
+      if (!JSON_STRING_WRAPPER_SET.has(identifier)) {
+        return null;
+      }
+
+      while (cursor < source.length && /\s/.test(source[cursor])) {
+        cursor += 1;
+      }
+
+      if (source[cursor] !== '(') {
+        return null;
+      }
+
+      cursor += 1;
+      wrappers.push(identifier);
+      continue;
+    }
+
+    if (current === '(') {
+      cursor += 1;
+      continue;
+    }
+
+    if (current === ')') {
+      cursor += 1;
+      continue;
+    }
+
+    return null;
+  }
+
+  return null;
+}
+
+function skipTrailingParensAndWhitespace(source, startIndex) {
+  let cursor = startIndex;
+
+  while (cursor < source.length && /\s/.test(source[cursor])) {
+    cursor += 1;
+  }
+
+  while (cursor < source.length && source[cursor] === ')') {
+    cursor += 1;
+    while (cursor < source.length && /\s/.test(source[cursor])) {
+      cursor += 1;
+    }
+  }
+
+  return cursor;
+}
+
+function applyJsonStringWrappers(value, wrappers) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  if (!Array.isArray(wrappers) || wrappers.length === 0) {
+    return value;
+  }
+
+  let result = value;
+  for (let index = wrappers.length - 1; index >= 0; index -= 1) {
+    result = decodeJsonWrapper(wrappers[index], result);
+    if (result === null) {
+      return null;
+    }
+  }
+
+  return result;
+}
+
+function decodeJsonWrapper(wrapper, value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    switch (wrapper) {
+      case 'decodeURIComponent':
+        return decodeURIComponent(value);
+      case 'decodeURI':
+        return decodeURI(value);
+      case 'unescape':
+        return decodeUsingUnescape(value);
+      case 'atob':
+        return decodeBase64(value);
+      default:
+        return null;
+    }
+  } catch (error) {
+    return null;
+  }
+}
+
+function decodeUsingUnescape(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  let result = value.replace(/%u([0-9A-Fa-f]{4})/g, (_, hex) => {
+    const codePoint = Number.parseInt(hex, 16);
+    if (!Number.isFinite(codePoint)) {
+      return '';
+    }
+    return String.fromCharCode(codePoint);
+  });
+
+  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => {
+    const codePoint = Number.parseInt(hex, 16);
+    if (!Number.isFinite(codePoint)) {
+      return '';
+    }
+    return String.fromCharCode(codePoint);
+  });
+
+  try {
+    return decodeURIComponent(result);
+  } catch (error) {
+    return result;
+  }
+}
+
+function decodeBase64(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    if (typeof atob === 'function') {
+      return atob(value);
+    }
+  } catch (error) {
+    // fall through to Buffer handling
+  }
+
+  if (typeof Buffer !== 'undefined') {
+    try {
+      return Buffer.from(value, 'base64').toString('utf8');
+    } catch (error) {
+      return null;
+    }
   }
 
   return null;
