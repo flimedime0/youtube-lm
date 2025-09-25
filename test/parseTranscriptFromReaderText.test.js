@@ -120,6 +120,20 @@ test('stripLeadingGlaspMetadataLines trims fused metadata and preserves transcri
   ]);
 });
 
+test('stripLeadingGlaspMetadataLines keeps genuine transcript lines beginning with By', () => {
+  const lines = [
+    'By popular demand, welcome back.',
+    'Second line continues the thought.'
+  ];
+
+  const stripped = stripLeadingGlaspMetadataLines(lines);
+
+  assert.deepStrictEqual(stripped, [
+    'By popular demand, welcome back.',
+    'Second line continues the thought.'
+  ]);
+});
+
 test('stripLeadingGlaspMetadataLines removes fused title/date metadata before controls', () => {
   const lines = [
     'Solve Any Problem With This 1 Simple MethodApril 27, 2025byGrindBuddySolve Any Problem With This 1 Simple MethodsShare VideoDownload .srtCopygo into the silence go and sit down quietly.'

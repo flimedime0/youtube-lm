@@ -721,19 +721,25 @@ function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
     if (!matched) {
       const byMatch = working.match(/^by(?:\b|\s+|(?=[A-Z#]))/i);
       if (byMatch) {
-        working = working.slice(byMatch[0].length);
-        working = working.trimStart();
-        removedAny = true;
-        matched = true;
-
-        const nameMatch = working.match(/^[A-Z][A-Za-z0-9'._-]*(?:\s+[A-Za-z0-9'._-]+)*/);
-        if (nameMatch) {
-          working = working.slice(nameMatch[0].length);
+        if (!removedAny && !hasRemovedEarlier) {
+          // Avoid stripping genuine transcript lines that begin with "By" when no
+          // earlier metadata tokens have been removed from this or previous lines.
+          matched = false;
         } else {
-          skipNextLine = true;
-        }
+          working = working.slice(byMatch[0].length);
+          working = working.trimStart();
+          removedAny = true;
+          matched = true;
 
-        working = working.trimStart();
+          const nameMatch = working.match(/^[A-Z][A-Za-z0-9'._-]*(?:\s+[A-Za-z0-9'._-]+)*/);
+          if (nameMatch) {
+            working = working.slice(nameMatch[0].length);
+          } else {
+            skipNextLine = true;
+          }
+
+          working = working.trimStart();
+        }
       }
     }
 
