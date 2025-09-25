@@ -1,12 +1,39 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+function createEventEmitter() {
+  const listeners = new Set();
+  return {
+    addListener(listener) {
+      listeners.add(listener);
+    },
+    removeListener(listener) {
+      listeners.delete(listener);
+    },
+    hasListener(listener) {
+      return listeners.has(listener);
+    },
+    dispatch(...args) {
+      for (const listener of [...listeners]) {
+        try {
+          listener(...args);
+        } catch (error) {
+          // ignore listener errors in tests
+        }
+      }
+    }
+  };
+}
+
 function createChromeStub() {
+  const onUpdated = createEventEmitter();
+  const onRemoved = createEventEmitter();
+
   return {
     runtime: { onMessage: { addListener: () => {} } },
     tabs: {
-      onUpdated: { addListener: () => {}, removeListener: () => {} },
-      onRemoved: { addListener: () => {}, removeListener: () => {} },
+      onUpdated,
+      onRemoved,
       create: async () => ({}),
       remove: async () => {},
       get: async () => ({})
@@ -115,6 +142,106 @@ test('fetchTranscriptFromYouTube falls back to timed text track list when watch 
     assert.ok(fetchCallCount >= 3, `expected multiple fetch attempts, received ${fetchCallCount}`);
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test('fetchTranscriptFromYouTube loads a watch tab when direct fetch fails', async () => {
+  const originalFetch = global.fetch;
+  const originalCreate = chrome.tabs.create;
+  const originalRemove = chrome.tabs.remove;
+  const originalExecute = chrome.scripting.executeScript;
+
+  const timedTextPayload = ")]}'\n{\"events\":[{\"tStartMs\":0,\"segs\":[{\"utf8\":\"Resolved via tab\"}]}]}";
+  let executeCalls = 0;
+  const createdTabs = [];
+
+  global.fetch = async (url) => {
+    if (url.includes('/watch')) {
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return '<!doctype html><html><body>Before you continue to YouTube</body></html>';
+        }
+      };
+    }
+
+    if (url.includes('type=list')) {
+      return {
+        ok: false,
+        status: 404,
+        async text() {
+          return '';
+        }
+      };
+    }
+
+    if (url.includes('timedtext') && url.includes('fmt=json3')) {
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return timedTextPayload;
+        }
+      };
+    }
+
+    return {
+      ok: false,
+      status: 404,
+      async text() {
+        return '';
+      }
+    };
+  };
+
+  let nextTabId = 600;
+  chrome.tabs.create = async ({ url }) => {
+    const tabId = nextTabId++;
+    createdTabs.push({ url, tabId });
+    setImmediate(() => {
+      chrome.tabs.onUpdated.dispatch(tabId, { status: 'complete' });
+    });
+    return { id: tabId };
+  };
+
+  chrome.tabs.remove = async () => {};
+
+  chrome.scripting.executeScript = async ({ target }) => {
+    executeCalls += 1;
+    return [
+      {
+        result: {
+          playerResponseJson: JSON.stringify({
+            captions: {
+              playerCaptionsTracklistRenderer: {
+                captionTracks: [
+                  {
+                    baseUrl:
+                      'https://www.youtube.com/api/timedtext?v=nyB5T_qZBE8&lang=en'
+                  }
+                ]
+              }
+            }
+          })
+        }
+      }
+    ];
+  };
+
+  try {
+    const transcript = await fetchTranscriptFromYouTube('https://www.youtube.com/watch?v=nyB5T_qZBE8');
+    assert.strictEqual(transcript, '[00:00] Resolved via tab');
+    assert.ok(executeCalls >= 1, 'Expected to evaluate the watch tab for a player response');
+    assert.ok(
+      createdTabs.some(({ url }) => url.includes('youtube.com/watch')),
+      'Expected to open a YouTube watch tab during fallback'
+    );
+  } finally {
+    global.fetch = originalFetch;
+    chrome.tabs.create = originalCreate;
+    chrome.tabs.remove = originalRemove;
+    chrome.scripting.executeScript = originalExecute;
   }
 });
 

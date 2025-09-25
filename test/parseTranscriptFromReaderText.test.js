@@ -1,12 +1,39 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+function createEventEmitter() {
+  const listeners = new Set();
+  return {
+    addListener(listener) {
+      listeners.add(listener);
+    },
+    removeListener(listener) {
+      listeners.delete(listener);
+    },
+    hasListener(listener) {
+      return listeners.has(listener);
+    },
+    dispatch(...args) {
+      for (const listener of [...listeners]) {
+        try {
+          listener(...args);
+        } catch (error) {
+          // ignore listener errors in tests
+        }
+      }
+    }
+  };
+}
+
 function createChromeStub() {
+  const onUpdated = createEventEmitter();
+  const onRemoved = createEventEmitter();
+
   return {
     runtime: { onMessage: { addListener: () => {} } },
     tabs: {
-      onUpdated: { addListener: () => {}, removeListener: () => {} },
-      onRemoved: { addListener: () => {}, removeListener: () => {} },
+      onUpdated,
+      onRemoved,
       create: async () => ({}),
       remove: async () => {},
       get: async () => ({})
