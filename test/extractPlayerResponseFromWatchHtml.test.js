@@ -41,7 +41,7 @@ if (typeof global.chrome === 'undefined') {
   global.chrome = createChromeStub();
 }
 
-const { extractPlayerResponseFromWatchHtml } = require('../background.js');
+const { extractPlayerResponseFromWatchHtml, isConsentInterstitialHtml } = require('../background.js');
 
 test('extractPlayerResponseFromWatchHtml parses assignments with fallback expressions', () => {
   const fixturePath = path.join(__dirname, 'fixtures', 'watch-with-fallback.html');
@@ -54,4 +54,12 @@ test('extractPlayerResponseFromWatchHtml parses assignments with fallback expres
     playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.[0]?.baseUrl,
     'https://example.com/captions'
   );
+});
+
+test('isConsentInterstitialHtml identifies consent interstitial markup', () => {
+  const fixturePath = path.join(__dirname, 'fixtures', 'watch-consent.html');
+  const html = fs.readFileSync(fixturePath, 'utf8');
+
+  assert.equal(isConsentInterstitialHtml(html), true);
+  assert.equal(extractPlayerResponseFromWatchHtml(html), null);
 });

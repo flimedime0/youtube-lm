@@ -161,7 +161,9 @@ if (typeof module !== 'undefined' && module.exports) {
     parseTranscriptFromReaderText,
     stripLeadingGlaspMetadataLines,
     extractPlayerResponseFromWatchHtml,
-    extractJsonObjectFromAssignment
+    extractJsonObjectFromAssignment,
+    isConsentInterstitialHtml,
+    buildWatchPageUrl
   };
 }
 
@@ -537,18 +539,16 @@ function parseTranscriptFromReaderText(pageText) {
 
   const headerPattern = /^(?:Summarize\s+)?Transcript(?:\s*English\s*\(auto-generated\))?$/i;
 
-  const fallbackLines = stripLeadingGlaspMetadataLines(
-    transcriptSection
-      .split(/\n+/)
-      .map((line) => line.trim())
-      .filter(
-        (line) =>
-          line.length > 0 &&
-          !isMarketingFooterLine(line) &&
-          !headerPattern.test(line) &&
-          !/^English\s*\(auto-generated\)$/i.test(line)
-      )
-  );
+  const fallbackLines = transcriptSection
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !isMarketingFooterLine(line) &&
+        !headerPattern.test(line) &&
+        !/^English\s*\(auto-generated\)$/i.test(line)
+    );
 
   const strippedFallbackLines = stripLeadingGlaspMetadataLines(fallbackLines);
   const fallbackTranscript = strippedFallbackLines.join('\n').trim();
@@ -832,20 +832,63 @@ async function fetchTranscriptFromYouTube(videoUrl) {
 }
 
 async function fetchTranscriptFromWatchPage(videoId) {
-  const watchUrl = buildWatchPageUrl(videoId);
-  if (!watchUrl) {
-    throw new Error('Unable to resolve watch page URL for transcript retrieval.');
+  const watchUrlCandidates = Array.from(
+    new Set(
+      [
+        buildWatchPageUrl(videoId),
+        buildWatchPageUrl(videoId, {
+          app: 'desktop',
+          persist_app: '1',
+          has_verified: '1',
+          hl: 'en',
+          gl: 'US',
+          persist_hl: '1',
+          persist_gl: '1',
+          bpctr: String(Math.max(1, Math.floor(Date.now() / 1000)))
+        })
+      ].filter(Boolean)
+    )
+  );
+
+  let lastError = null;
+  let playerResponse = null;
+
+  for (const watchUrl of watchUrlCandidates) {
+    if (!watchUrl) {
+      continue;
+    }
+
+    let response;
+    try {
+      response = await fetch(watchUrl, { credentials: 'include', redirect: 'follow' });
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Watch page request failed.');
+      continue;
+    }
+
+    if (!response.ok) {
+      lastError = new Error(`Watch page request failed with status ${response.status}`);
+      continue;
+    }
+
+    const html = await response.text();
+    if (isConsentInterstitialHtml(html)) {
+      lastError = new Error('Watch page request returned a consent interstitial.');
+      continue;
+    }
+
+    const parsed = extractPlayerResponseFromWatchHtml(html);
+    if (!parsed) {
+      lastError = new Error('Unable to locate player response in watch page HTML.');
+      continue;
+    }
+
+    playerResponse = parsed;
+    break;
   }
 
-  const response = await fetch(watchUrl, { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(`Watch page request failed with status ${response.status}`);
-  }
-
-  const html = await response.text();
-  const playerResponse = extractPlayerResponseFromWatchHtml(html);
   if (!playerResponse) {
-    throw new Error('Unable to locate player response in watch page HTML.');
+    throw lastError || new Error('Unable to locate player response in watch page HTML.');
   }
 
   const captionTrack = selectBestCaptionTrack(playerResponse);
@@ -871,12 +914,28 @@ async function fetchTranscriptFromWatchPage(videoId) {
   return formatted;
 }
 
-function buildWatchPageUrl(videoId) {
+function buildWatchPageUrl(videoId, queryOverrides = null, baseUrl = 'https://www.youtube.com/watch') {
   if (!videoId) {
     return null;
   }
 
-  return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set('v', videoId);
+
+    if (queryOverrides && typeof queryOverrides === 'object') {
+      for (const [key, value] of Object.entries(queryOverrides)) {
+        if (value === undefined || value === null) {
+          continue;
+        }
+        url.searchParams.set(key, String(value));
+      }
+    }
+
+    return url.toString();
+  } catch (error) {
+    return null;
+  }
 }
 
 function extractPlayerResponseFromWatchHtml(html) {
@@ -902,6 +961,27 @@ function extractPlayerResponseFromWatchHtml(html) {
   }
 
   return null;
+}
+
+function isConsentInterstitialHtml(html) {
+  if (typeof html !== 'string' || !html) {
+    return false;
+  }
+
+  const lower = html.slice(0, 50000).toLowerCase();
+  if (!lower.includes('consent.youtube.com') && !lower.includes('consent.google.com')) {
+    return false;
+  }
+
+  if (lower.includes('before you continue to youtube')) {
+    return true;
+  }
+
+  if (/<form[^>]+action="https:\/\/consent\.youtube\.com\//i.test(html)) {
+    return true;
+  }
+
+  return false;
 }
 
 function extractJsonObjectFromAssignment(source, marker) {
