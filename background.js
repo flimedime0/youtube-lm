@@ -156,6 +156,17 @@ async function fetchTranscriptFromGlasp(videoUrl) {
   }
 }
 
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    parseTranscriptFromReaderText,
+    stripLeadingGlaspMetadataLines,
+    extractPlayerResponseFromWatchHtml,
+    extractJsonObjectFromAssignment,
+    isConsentInterstitialHtml,
+    buildWatchPageUrl
+  };
+}
+
 async function openChatGPTTab(prompt, preferredHost, autoSend) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
     throw new Error('Invalid prompt supplied.');
@@ -447,12 +458,126 @@ function parseTranscriptFromReaderText(pageText) {
         !/^English\s*\(auto-generated\)$/i.test(line)
     );
 
-  const fallbackTranscript = fallbackLines.join('\n').trim();
+  const strippedFallbackLines = stripLeadingGlaspMetadataLines(fallbackLines);
+  const fallbackTranscript = strippedFallbackLines.join('\n').trim();
   if (!fallbackTranscript) {
     throw new Error('Transcript data not found on Glasp for this video.');
   }
 
   return fallbackTranscript;
+}
+
+function stripLeadingGlaspMetadataLines(lines) {
+  if (!Array.isArray(lines)) {
+    return [];
+  }
+
+  const metadataKeywords = [
+    'youtube transcript & summary',
+    '& summary',
+    'summary',
+    'transcripts',
+    'youtube video player',
+    'share video',
+    'download .srt',
+    'copy transcript',
+    'copy',
+    'summarize transcript',
+    'get transcript & summary'
+  ];
+
+  const keywordSet = new Set(metadataKeywords.map((value) => value.toLowerCase()));
+  const combinedKeywordPatterns = metadataKeywords.map((keyword) => {
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(escaped.replace(/\s+/g, '\\s*'), 'i');
+  });
+
+  const monthNames = [
+    'january',
+    'february',
+    'march',
+    'april',
+    'may',
+    'june',
+    'july',
+    'august',
+    'september',
+    'october',
+    'november',
+    'december'
+  ];
+
+  const datePattern = new RegExp(
+    `^(?:${monthNames.join('|')})\\s+\\d{1,2},\\s*\\d{4}$`,
+    'i'
+  );
+
+  let index = 0;
+  let removedAny = false;
+  let skipNext = false;
+
+  while (index < lines.length) {
+    if (skipNext) {
+      skipNext = false;
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    const current = lines[index];
+    const trimmed = typeof current === 'string' ? current.trim() : '';
+    if (!trimmed) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    const lower = trimmed.toLowerCase();
+
+    if (/^#\S+/.test(trimmed)) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    if (keywordSet.has(lower) || combinedKeywordPatterns.some((pattern) => pattern.test(trimmed))) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    if (lower === 'by') {
+      skipNext = true;
+      index += 1;
+      continue;
+    }
+
+    if (lower.startsWith('by ')) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    const nextLine = typeof lines[index + 1] === 'string' ? lines[index + 1].trim() : '';
+    if (
+      datePattern.test(trimmed) &&
+      (removedAny || /^(?:by\b|#|share\b|download\b|copy\b|summarize\b)/i.test(nextLine))
+    ) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    if (trimmed === 's' && removedAny) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return lines.slice(index);
 }
 
 function truncateMarketingContent(text) {
@@ -582,6 +707,15 @@ async function fetchTranscriptFromYouTube(videoUrl) {
     throw new Error('Unable to determine video ID for transcript fallback.');
   }
 
+  try {
+    const transcriptFromWatchPage = await fetchTranscriptFromWatchPage(videoId);
+    if (transcriptFromWatchPage) {
+      return transcriptFromWatchPage;
+    }
+  } catch (error) {
+    console.debug('Failed to fetch transcript from watch page', error);
+  }
+
   const paramVariants = ['lang=en&fmt=json3', 'lang=en&kind=asr&fmt=json3', 'lang=en-US&fmt=json3', 'lang=en-US&kind=asr&fmt=json3'];
 
   for (const params of paramVariants) {
@@ -603,6 +737,591 @@ async function fetchTranscriptFromYouTube(videoUrl) {
   }
 
   throw new Error('Timed YouTube transcript unavailable.');
+}
+
+async function fetchTranscriptFromWatchPage(videoId) {
+  const watchUrlCandidates = Array.from(
+    new Set(
+      [
+        buildWatchPageUrl(videoId),
+        buildWatchPageUrl(videoId, {
+          app: 'desktop',
+          persist_app: '1',
+          has_verified: '1',
+          hl: 'en',
+          gl: 'US',
+          persist_hl: '1',
+          persist_gl: '1',
+          bpctr: String(Math.max(1, Math.floor(Date.now() / 1000)))
+        })
+      ].filter(Boolean)
+    )
+  );
+
+  let lastError = null;
+  let playerResponse = null;
+
+  for (const watchUrl of watchUrlCandidates) {
+    if (!watchUrl) {
+      continue;
+    }
+
+    let response;
+    try {
+      response = await fetch(watchUrl, { credentials: 'include', redirect: 'follow' });
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Watch page request failed.');
+      continue;
+    }
+
+    if (!response.ok) {
+      lastError = new Error(`Watch page request failed with status ${response.status}`);
+      continue;
+    }
+
+    const html = await response.text();
+    if (isConsentInterstitialHtml(html)) {
+      lastError = new Error('Watch page request returned a consent interstitial.');
+      continue;
+    }
+
+    const parsed = extractPlayerResponseFromWatchHtml(html);
+    if (!parsed) {
+      lastError = new Error('Unable to locate player response in watch page HTML.');
+      continue;
+    }
+
+    playerResponse = parsed;
+    break;
+  }
+
+  if (!playerResponse) {
+    throw lastError || new Error('Unable to locate player response in watch page HTML.');
+  }
+
+  const captionTrack = selectBestCaptionTrack(playerResponse);
+  if (!captionTrack || typeof captionTrack.baseUrl !== 'string') {
+    throw new Error('No caption track with a valid base URL was found in the player response.');
+  }
+
+  const requestUrl = buildTimedTextRequestUrl(captionTrack.baseUrl);
+  if (!requestUrl) {
+    throw new Error('Unable to normalize the caption track URL for transcript retrieval.');
+  }
+
+  const timedTextData = await fetchTimedTextJson(requestUrl);
+  if (!timedTextData) {
+    throw new Error('Timed text response from YouTube was empty.');
+  }
+
+  const formatted = parseTimedTextJson(timedTextData);
+  if (!formatted) {
+    throw new Error('Unable to format timed text transcript from YouTube watch page.');
+  }
+
+  return formatted;
+}
+
+function buildWatchPageUrl(videoId, queryOverrides = null, baseUrl = 'https://www.youtube.com/watch') {
+  if (!videoId) {
+    return null;
+  }
+
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set('v', videoId);
+
+    if (queryOverrides && typeof queryOverrides === 'object') {
+      for (const [key, value] of Object.entries(queryOverrides)) {
+        if (value === undefined || value === null) {
+          continue;
+        }
+        url.searchParams.set(key, String(value));
+      }
+    }
+
+    return url.toString();
+  } catch (error) {
+    return null;
+  }
+}
+
+function extractPlayerResponseFromWatchHtml(html) {
+  if (typeof html !== 'string' || !html) {
+    return null;
+  }
+
+  const assignmentMarkers = [
+    'ytInitialPlayerResponse =',
+    'var ytInitialPlayerResponse =',
+    'let ytInitialPlayerResponse =',
+    'const ytInitialPlayerResponse =',
+    'window["ytInitialPlayerResponse"] =',
+    'window.ytInitialPlayerResponse =',
+    'self.ytInitialPlayerResponse =',
+    'this.ytInitialPlayerResponse ='
+  ];
+  for (const marker of assignmentMarkers) {
+    const parsed = extractJsonObjectFromAssignment(html, marker);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  const inlineMatch = html.match(/"playerResponse":\s*(\{.*?\})\s*,\s*"responseContext"/s);
+  if (inlineMatch) {
+    try {
+      return JSON.parse(inlineMatch[1]);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function isConsentInterstitialHtml(html) {
+  if (typeof html !== 'string' || !html) {
+    return false;
+  }
+
+  const lower = html.slice(0, 50000).toLowerCase();
+  if (!lower.includes('consent.youtube.com') && !lower.includes('consent.google.com')) {
+    return false;
+  }
+
+  if (lower.includes('before you continue to youtube')) {
+    return true;
+  }
+
+  if (/<form[^>]+action="https:\/\/consent\.youtube\.com\//i.test(html)) {
+    return true;
+  }
+
+  return false;
+}
+
+function extractJsonObjectFromAssignment(source, marker) {
+  if (typeof source !== 'string' || !marker) {
+    return null;
+  }
+
+  let searchIndex = 0;
+
+  while (searchIndex < source.length) {
+    const index = source.indexOf(marker, searchIndex);
+    if (index === -1) {
+      break;
+    }
+
+    let cursor = index + marker.length;
+
+    while (cursor < source.length) {
+      const current = source[cursor];
+
+      if (/\s/.test(current) || current === '=') {
+        cursor += 1;
+        continue;
+    }
+
+    if (current === '(' || current === '!' || current === ')') {
+      cursor += 1;
+      continue;
+    }
+
+      if (current === '{') {
+        const jsonText = extractBalancedJson(source, cursor);
+        if (jsonText) {
+          try {
+            return JSON.parse(jsonText);
+          } catch (error) {
+            // continue scanning for other payloads
+          }
+        }
+        cursor += 1;
+        continue;
+      }
+
+      if (current === '"' || current === '\'') {
+        const literal = extractJsStringLiteral(source, cursor);
+        if (!literal) {
+          cursor += 1;
+          continue;
+        }
+        const decoded = decodeJsStringLiteral(literal);
+        if (decoded !== null) {
+          try {
+            return JSON.parse(decoded);
+          } catch (error) {
+            // fall through and continue scanning after the literal
+          }
+        }
+        cursor += literal.length;
+        continue;
+      }
+
+      if (source.startsWith('JSON.parse', cursor)) {
+        const openParenIndex = source.indexOf('(', cursor);
+        if (openParenIndex === -1) {
+          cursor += 'JSON.parse'.length;
+          continue;
+        }
+
+        let argumentIndex = openParenIndex + 1;
+        while (argumentIndex < source.length && /\s/.test(source[argumentIndex])) {
+          argumentIndex += 1;
+        }
+
+        if (argumentIndex >= source.length) {
+          cursor = openParenIndex + 1;
+          continue;
+        }
+
+        const argumentStart = source[argumentIndex];
+        if (argumentStart === '"' || argumentStart === '\'') {
+          const literal = extractJsStringLiteral(source, argumentIndex);
+          if (!literal) {
+            cursor = argumentIndex + 1;
+            continue;
+          }
+          const decoded = decodeJsStringLiteral(literal);
+          if (decoded !== null) {
+            try {
+              return JSON.parse(decoded);
+            } catch (error) {
+              // continue scanning when the literal is not valid JSON
+            }
+          }
+          cursor = argumentIndex + literal.length;
+          continue;
+        }
+
+        cursor = argumentIndex + 1;
+        continue;
+      }
+
+      if (/[A-Za-z0-9_$.[\]]/.test(current)) {
+        cursor = advancePastIdentifierChain(source, cursor);
+        continue;
+      }
+
+      if (current === '|' || current === '&' || current === '?' || current === ':' || current === '+' || current === '-') {
+        cursor += 1;
+        continue;
+      }
+
+      cursor += 1;
+    }
+
+    searchIndex = index + marker.length;
+  }
+
+  return null;
+}
+
+function advancePastIdentifierChain(source, startIndex) {
+  let cursor = startIndex;
+  while (cursor < source.length) {
+    const character = source[cursor];
+    if (/[A-Za-z0-9_$]/.test(character)) {
+      cursor += 1;
+      continue;
+    }
+
+    if (character === '.') {
+      cursor += 1;
+      continue;
+    }
+
+    if (character === '[') {
+      cursor += 1;
+      while (cursor < source.length && /\s/.test(source[cursor])) {
+        cursor += 1;
+      }
+
+      if (cursor >= source.length) {
+        return cursor;
+      }
+
+      const bracketStart = source[cursor];
+      if (bracketStart === '"' || bracketStart === '\'') {
+        const literal = extractJsStringLiteral(source, cursor);
+        if (!literal) {
+          return cursor;
+        }
+        cursor += literal.length;
+        while (cursor < source.length && /\s/.test(source[cursor])) {
+          cursor += 1;
+        }
+        if (source[cursor] === ']') {
+          cursor += 1;
+          continue;
+        }
+        return cursor;
+      }
+
+      while (cursor < source.length && source[cursor] !== ']') {
+        cursor += 1;
+      }
+      if (source[cursor] === ']') {
+        cursor += 1;
+      }
+      continue;
+    }
+
+    if (character === ']') {
+      cursor += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return cursor;
+}
+
+function extractBalancedJson(source, startIndex) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (character === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(startIndex, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractJsStringLiteral(source, startIndex) {
+  const quote = source[startIndex];
+  let cursor = startIndex + 1;
+  let escaped = false;
+
+  while (cursor < source.length) {
+    const character = source[cursor];
+    if (escaped) {
+      escaped = false;
+    } else if (character === '\\') {
+      escaped = true;
+    } else if (character === quote) {
+      return source.slice(startIndex, cursor + 1);
+    }
+    cursor += 1;
+  }
+
+  return null;
+}
+
+function decodeJsStringLiteral(literal) {
+  if (typeof literal !== 'string' || literal.length < 2) {
+    return null;
+  }
+
+  const quote = literal[0];
+  if ((quote !== '"' && quote !== '\'') || literal[literal.length - 1] !== quote) {
+    return null;
+  }
+
+  let result = '';
+  for (let index = 1; index < literal.length - 1; index += 1) {
+    const character = literal[index];
+    if (character === '\\') {
+      index += 1;
+      if (index >= literal.length - 1) {
+        break;
+      }
+
+      const next = literal[index];
+      switch (next) {
+        case 'n':
+          result += '\n';
+          break;
+        case 'r':
+          result += '\r';
+          break;
+        case 't':
+          result += '\t';
+          break;
+        case 'b':
+          result += '\b';
+          break;
+        case 'f':
+          result += '\f';
+          break;
+        case 'v':
+          result += '\v';
+          break;
+        case '0':
+          result += '\0';
+          break;
+        case '\\':
+          result += '\\';
+          break;
+        case '\'':
+          result += '\'';
+          break;
+        case '"':
+          result += '"';
+          break;
+        case 'x': {
+          const hex = literal.slice(index + 1, index + 3);
+          if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+            result += String.fromCharCode(Number.parseInt(hex, 16));
+            index += 2;
+          } else {
+            result += next;
+          }
+          break;
+        }
+        case 'u': {
+          const hex = literal.slice(index + 1, index + 5);
+          if (/^[0-9A-Fa-f]{4}$/.test(hex)) {
+            result += String.fromCharCode(Number.parseInt(hex, 16));
+            index += 4;
+          } else {
+            result += next;
+          }
+          break;
+        }
+        default:
+          result += next;
+          break;
+      }
+    } else {
+      result += character;
+    }
+  }
+
+  return result;
+}
+
+function selectBestCaptionTrack(playerResponse) {
+  const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    return null;
+  }
+
+  const viableTracks = tracks.filter((track) => track && typeof track.baseUrl === 'string' && track.baseUrl.trim().length > 0);
+  if (viableTracks.length === 0) {
+    return null;
+  }
+
+  const scored = viableTracks
+    .map((track, index) => ({ track, index, score: scoreCaptionTrack(track) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return a.index - b.index;
+    });
+
+  return scored[0]?.track ?? null;
+}
+
+function scoreCaptionTrack(track) {
+  if (!track || typeof track !== 'object') {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  let score = 0;
+  const languageCode = typeof track.languageCode === 'string' ? track.languageCode.toLowerCase() : '';
+  const vssId = typeof track.vssId === 'string' ? track.vssId.toLowerCase() : '';
+  const trackKind = typeof track.kind === 'string' ? track.kind.toLowerCase() : '';
+
+  if (languageCode === 'en') {
+    score += 30;
+  } else if (languageCode.startsWith('en')) {
+    score += 25;
+  } else if (languageCode) {
+    score += 10;
+  }
+
+  if (!trackKind) {
+    score += 5;
+  } else if (trackKind === 'asr') {
+    score -= 5;
+  }
+
+  if (vssId.startsWith('a.')) {
+    score -= 2;
+  }
+
+  if (track.isTranslatable) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function buildTimedTextRequestUrl(baseUrl) {
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
+    return null;
+  }
+
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set('fmt', 'json3');
+    return url.toString();
+  } catch (error) {
+    return null;
+  }
+}
+
+async function fetchTimedTextJson(requestUrl) {
+  if (typeof requestUrl !== 'string' || !requestUrl) {
+    return null;
+  }
+
+  const response = await fetch(requestUrl, { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`Timed text request failed with status ${response.status}`);
+  }
+
+  const rawText = await response.text();
+  const sanitized = stripXssiPrefix(rawText).trim();
+  if (!sanitized) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(sanitized);
+  } catch (error) {
+    throw new Error('Unable to parse timed text response as JSON.');
+  }
+}
+
+function stripXssiPrefix(text) {
+  if (typeof text !== 'string') {
+    return '';
+  }
+  return text.replace(/^\)\]\}'\s*/u, '');
 }
 
 function extractVideoIdFromUrl(videoUrl) {
