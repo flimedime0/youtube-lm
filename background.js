@@ -160,6 +160,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     parseTranscriptFromReaderText,
     stripLeadingGlaspMetadataLines,
+    stripResidualGlaspControlsPrefix,
     extractPlayerResponseFromWatchHtml,
     extractJsonObjectFromAssignment,
     isConsentInterstitialHtml,
@@ -551,7 +552,14 @@ function parseTranscriptFromReaderText(pageText) {
     );
 
   const strippedFallbackLines = stripLeadingGlaspMetadataLines(fallbackLines);
-  const fallbackTranscript = strippedFallbackLines.join('\n').trim();
+  let fallbackTranscript = strippedFallbackLines.join('\n').trim();
+
+  if (fallbackTranscript) {
+    const cleaned = stripResidualGlaspControlsPrefix(fallbackTranscript);
+    if (cleaned) {
+      fallbackTranscript = cleaned;
+    }
+  }
   if (!fallbackTranscript) {
     throw new Error('Transcript data not found on Glasp for this video.');
   }
@@ -775,6 +783,42 @@ function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
     removed: removedAny,
     skipNextLine
   };
+}
+
+function stripResidualGlaspControlsPrefix(text) {
+  if (typeof text !== 'string') {
+    return '';
+  }
+
+  let working = text.trimStart();
+  if (!working) {
+    return '';
+  }
+
+  const scanWindow = working.slice(0, 500);
+  const controlPattern = /(Share\s*Video|Download\s*\.?srt|Copy(?:\s*Transcript)?|Summarize\s*Transcript|English\s*\(auto-generated\))/gi;
+  let match;
+  let lastEnd = -1;
+
+  while ((match = controlPattern.exec(scanWindow)) !== null) {
+    lastEnd = match.index + match[0].length;
+  }
+
+  if (lastEnd >= 0) {
+    const remainder = working.slice(lastEnd).trimStart();
+    if (remainder) {
+      return remainder;
+    }
+  }
+
+  const residualMetadataPattern = /^(?:#[^\s#]+|Glasp\s*Reader|YouTube\s*Transcript|Transcripts?|English\s*\(auto-generated\)|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}|\d{1,2},\s*\d{4}|by\b)/i;
+  const metadataDetected = residualMetadataPattern.test(working);
+  const processed = stripGlaspMetadataPrefix(working, metadataDetected);
+  if (processed.removed && processed.text) {
+    return processed.text;
+  }
+
+  return working;
 }
 
 function truncateMarketingContent(text) {

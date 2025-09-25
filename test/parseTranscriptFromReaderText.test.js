@@ -41,7 +41,8 @@ if (typeof global.chrome === 'undefined') {
 
 const {
   parseTranscriptFromReaderText,
-  stripLeadingGlaspMetadataLines
+  stripLeadingGlaspMetadataLines,
+  stripResidualGlaspControlsPrefix
 } = require('../background.js');
 
 test('stripLeadingGlaspMetadataLines removes Glasp header metadata', () => {
@@ -162,4 +163,20 @@ test('parseTranscriptFromReaderText handles fused metadata header text', () => {
       'You notice how people affect your peace.'
     ].join('\n')
   );
+});
+
+test('stripResidualGlaspControlsPrefix removes trailing Glasp controls before dialogue', () => {
+  const input = 'Share VideoDownload .srtCopy TranscriptSummarize TranscriptEnglish (auto-generated)First spoken line of the clip.';
+
+  const cleaned = stripResidualGlaspControlsPrefix(input);
+
+  assert.strictEqual(cleaned, 'First spoken line of the clip.');
+});
+
+test('stripResidualGlaspControlsPrefix leaves ordinary dialogue untouched', () => {
+  const input = 'Share valuable lessons with your friends every day.';
+
+  const cleaned = stripResidualGlaspControlsPrefix(input);
+
+  assert.strictEqual(cleaned, 'Share valuable lessons with your friends every day.');
 });
