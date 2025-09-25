@@ -56,6 +56,19 @@ test('extractPlayerResponseFromWatchHtml parses assignments with fallback expres
   );
 });
 
+test('extractPlayerResponseFromWatchHtml skips non-JSON assignments and continues scanning', () => {
+  const fixturePath = path.join(__dirname, 'fixtures', 'watch-with-multi-assignments.html');
+  const html = fs.readFileSync(fixturePath, 'utf8');
+
+  const playerResponse = extractPlayerResponseFromWatchHtml(html);
+
+  assert.ok(playerResponse, 'Expected a player response object');
+  assert.deepStrictEqual(
+    playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.[0]?.baseUrl,
+    'https://example.com/alt-captions'
+  );
+});
+
 test('isConsentInterstitialHtml identifies consent interstitial markup', () => {
   const fixturePath = path.join(__dirname, 'fixtures', 'watch-consent.html');
   const html = fs.readFileSync(fixturePath, 'utf8');

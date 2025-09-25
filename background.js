@@ -943,7 +943,16 @@ function extractPlayerResponseFromWatchHtml(html) {
     return null;
   }
 
-  const assignmentMarkers = ['ytInitialPlayerResponse =', 'window["ytInitialPlayerResponse"] ='];
+  const assignmentMarkers = [
+    'ytInitialPlayerResponse =',
+    'var ytInitialPlayerResponse =',
+    'let ytInitialPlayerResponse =',
+    'const ytInitialPlayerResponse =',
+    'window["ytInitialPlayerResponse"] =',
+    'window.ytInitialPlayerResponse =',
+    'self.ytInitialPlayerResponse =',
+    'this.ytInitialPlayerResponse ='
+  ];
   for (const marker of assignmentMarkers) {
     const parsed = extractJsonObjectFromAssignment(html, marker);
     if (parsed) {
@@ -985,19 +994,26 @@ function isConsentInterstitialHtml(html) {
 }
 
 function extractJsonObjectFromAssignment(source, marker) {
-  const index = source.indexOf(marker);
-  if (index === -1) {
+  if (typeof source !== 'string' || !marker) {
     return null;
   }
 
-  let cursor = index + marker.length;
+  let searchIndex = 0;
 
-  while (cursor < source.length) {
-    const current = source[cursor];
+  while (searchIndex < source.length) {
+    const index = source.indexOf(marker, searchIndex);
+    if (index === -1) {
+      break;
+    }
 
-    if (/\s/.test(current) || current === '=') {
-      cursor += 1;
-      continue;
+    let cursor = index + marker.length;
+
+    while (cursor < source.length) {
+      const current = source[cursor];
+
+      if (/\s/.test(current) || current === '=') {
+        cursor += 1;
+        continue;
     }
 
     if (current === '(' || current === '!' || current === ')') {
@@ -1005,78 +1021,91 @@ function extractJsonObjectFromAssignment(source, marker) {
       continue;
     }
 
-    if (current === '{') {
-      const jsonText = extractBalancedJson(source, cursor);
-      if (!jsonText) {
-        return null;
-      }
-      try {
-        return JSON.parse(jsonText);
-      } catch (error) {
-        return null;
-      }
-    }
-
-    if (current === '"' || current === '\'') {
-      const literal = extractJsStringLiteral(source, cursor);
-      if (!literal) {
-        return null;
-      }
-      const decoded = decodeJsStringLiteral(literal);
-      if (decoded === null) {
-        return null;
-      }
-      try {
-        return JSON.parse(decoded);
-      } catch (error) {
-        return null;
-      }
-    }
-
-    if (source.startsWith('JSON.parse', cursor)) {
-      const openParenIndex = source.indexOf('(', cursor);
-      if (openParenIndex === -1) {
-        return null;
+      if (current === '{') {
+        const jsonText = extractBalancedJson(source, cursor);
+        if (jsonText) {
+          try {
+            return JSON.parse(jsonText);
+          } catch (error) {
+            // continue scanning for other payloads
+          }
+        }
+        cursor += 1;
+        continue;
       }
 
-      let argumentIndex = openParenIndex + 1;
-      while (argumentIndex < source.length && /\s/.test(source[argumentIndex])) {
-        argumentIndex += 1;
-      }
-
-      if (argumentIndex >= source.length) {
-        return null;
-      }
-
-      const argumentStart = source[argumentIndex];
-      if (argumentStart === '"' || argumentStart === '\'') {
-        const literal = extractJsStringLiteral(source, argumentIndex);
+      if (current === '"' || current === '\'') {
+        const literal = extractJsStringLiteral(source, cursor);
         if (!literal) {
-          return null;
+          cursor += 1;
+          continue;
         }
         const decoded = decodeJsStringLiteral(literal);
-        if (decoded === null) {
-          return null;
+        if (decoded !== null) {
+          try {
+            return JSON.parse(decoded);
+          } catch (error) {
+            // fall through and continue scanning after the literal
+          }
         }
-        try {
-          return JSON.parse(decoded);
-        } catch (error) {
-          return null;
-        }
+        cursor += literal.length;
+        continue;
       }
-    }
 
-    if (/[A-Za-z0-9_$.[\]]/.test(current)) {
-      cursor = advancePastIdentifierChain(source, cursor);
-      continue;
-    }
+      if (source.startsWith('JSON.parse', cursor)) {
+        const openParenIndex = source.indexOf('(', cursor);
+        if (openParenIndex === -1) {
+          cursor += 'JSON.parse'.length;
+          continue;
+        }
 
-    if (current === '|' || current === '&' || current === '?' || current === ':' || current === '+') {
+        let argumentIndex = openParenIndex + 1;
+        while (argumentIndex < source.length && /\s/.test(source[argumentIndex])) {
+          argumentIndex += 1;
+        }
+
+        if (argumentIndex >= source.length) {
+          cursor = openParenIndex + 1;
+          continue;
+        }
+
+        const argumentStart = source[argumentIndex];
+        if (argumentStart === '"' || argumentStart === '\'') {
+          const literal = extractJsStringLiteral(source, argumentIndex);
+          if (!literal) {
+            cursor = argumentIndex + 1;
+            continue;
+          }
+          const decoded = decodeJsStringLiteral(literal);
+          if (decoded !== null) {
+            try {
+              return JSON.parse(decoded);
+            } catch (error) {
+              // continue scanning when the literal is not valid JSON
+            }
+          }
+          cursor = argumentIndex + literal.length;
+          continue;
+        }
+
+        cursor = argumentIndex + 1;
+        continue;
+      }
+
+      if (/[A-Za-z0-9_$.[\]]/.test(current)) {
+        cursor = advancePastIdentifierChain(source, cursor);
+        continue;
+      }
+
+      if (current === '|' || current === '&' || current === '?' || current === ':' || current === '+' || current === '-') {
+        cursor += 1;
+        continue;
+      }
+
       cursor += 1;
-      continue;
     }
 
-    cursor += 1;
+    searchIndex = index + marker.length;
   }
 
   return null;
