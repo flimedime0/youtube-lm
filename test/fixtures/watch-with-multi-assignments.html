@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>YouTube</title>
+  </head>
+  <body>
+    <script>
+      var ytInitialPlayerResponse = window.ytInitialPlayerResponse || null;
+      if (!ytInitialPlayerResponse) {
+        ytInitialPlayerResponse = this.ytInitialPlayerResponse || void 0;
+      }
+      this.ytInitialPlayerResponse = window["ytInitialPlayerResponse"] || {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://example.com/alt-captions"}]}}};
+    </script>
+  </body>
+</html>
