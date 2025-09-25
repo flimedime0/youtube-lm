@@ -419,6 +419,98 @@ function isMarketingFooterLine(line) {
   return isStrongMarketingLine(line);
 }
 
+function stripLeadingGlaspMetadataLines(lines) {
+  if (!Array.isArray(lines)) {
+    return [];
+  }
+
+  const monthPattern =
+    /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i;
+
+  const shouldDropLine = (line, metadataSeen) => {
+    if (typeof line !== 'string') {
+      return true;
+    }
+
+    const normalized = line.replace(/\u00a0/g, ' ').trim();
+    if (!normalized) {
+      return true;
+    }
+
+    if (/^#[\p{L}\p{N}_-]+/u.test(normalized)) {
+      return true;
+    }
+
+    if (monthPattern.test(normalized)) {
+      return true;
+    }
+
+    if (/^(?:\d{1,2}[\/-]){2}\d{2,4}$/.test(normalized)) {
+      return true;
+    }
+
+    if (/^\d{4}$/.test(normalized)) {
+      return true;
+    }
+
+    if (/^by\s*[:|]*$/i.test(normalized)) {
+      return true;
+    }
+
+    if (/^by\b/i.test(normalized)) {
+      const remainder = normalized.slice(2).trim();
+      if (!remainder) {
+        return true;
+      }
+
+      const firstWord = remainder.split(/\s+/)[0];
+      if (/^@[\w.-]+/.test(firstWord)) {
+        return true;
+      }
+
+      if (metadataSeen && (/^[A-Z#]/.test(firstWord) || /^[a-z]/.test(firstWord) === false)) {
+        return true;
+      }
+    }
+
+    if ((normalized.includes('#') || normalized.includes('@') || normalized.includes('•')) && metadataSeen) {
+      return true;
+    }
+
+    if (metadataSeen && /^[A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*)*$/.test(normalized)) {
+      return true;
+    }
+
+    return false;
+  };
+
+  let dropCount = 0;
+  let metadataSeen = false;
+  let dropNextAuthorLine = false;
+
+  for (const line of lines) {
+    if (dropNextAuthorLine) {
+      dropCount += 1;
+      metadataSeen = true;
+      dropNextAuthorLine = false;
+      continue;
+    }
+
+    if (!shouldDropLine(line, metadataSeen)) {
+      break;
+    }
+
+    const normalized = typeof line === 'string' ? line.replace(/\u00a0/g, ' ').trim() : '';
+    dropCount += 1;
+    metadataSeen = true;
+    if (/^by\s*[:|]*$/i.test(normalized)) {
+      dropNextAuthorLine = true;
+    }
+  }
+
+  return lines.slice(dropCount);
+}
+
 function parseTranscriptFromReaderText(pageText) {
   if (typeof pageText !== 'string' || pageText.trim().length === 0) {
     throw new Error('Empty response received from Glasp.');
@@ -2142,4 +2234,13 @@ async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false)
     }
     return false;
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    extractPlayerResponseFromWatchHtml,
+    extractJsonObjectFromAssignment,
+    parseTranscriptFromReaderText,
+    stripLeadingGlaspMetadataLines
+  };
 }
