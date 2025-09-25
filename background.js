@@ -697,12 +697,17 @@ function extractJsonObjectFromAssignment(source, marker) {
   const fallbackPattern = /^(?:window\[(?:"ytInitialPlayerResponse"|'ytInitialPlayerResponse')\]|window\.ytInitialPlayerResponse|ytInitialPlayerResponse)\s*\|\|/;
 
   while (cursor < source.length) {
-    while (cursor < source.length && /[\s=]+/.test(source[cursor])) {
+    while (cursor < source.length && /[\s=;]+/.test(source[cursor])) {
       cursor += 1;
     }
 
     if (cursor >= source.length) {
       return null;
+    }
+
+    if (source[cursor] === '(' || source[cursor] === ')') {
+      cursor += 1;
+      continue;
     }
 
     const remaining = source.slice(cursor);
@@ -712,7 +717,7 @@ function extractJsonObjectFromAssignment(source, marker) {
       continue;
     }
 
-    if (source.startsWith('JSON.parse', cursor)) {
+    if (remaining.startsWith('JSON.parse')) {
       const openParenIndex = source.indexOf('(', cursor);
       if (openParenIndex === -1) {
         cursor += 'JSON.parse'.length;
