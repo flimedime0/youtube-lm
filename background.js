@@ -564,25 +564,60 @@ function stripLeadingGlaspMetadataLines(lines) {
     return [];
   }
 
-  const metadataKeywords = [
-    'youtube transcript & summary',
-    '& summary',
-    'summary',
-    'transcripts',
-    'youtube video player',
-    'share video',
-    'download .srt',
-    'copy transcript',
-    'copy',
-    'summarize transcript',
-    'get transcript & summary'
-  ];
+  const cleaned = [];
+  let skipping = true;
+  let skipNext = false;
+  let removedAny = false;
 
-  const keywordSet = new Set(metadataKeywords.map((value) => value.toLowerCase()));
-  const combinedKeywordPatterns = metadataKeywords.map((keyword) => {
-    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(escaped.replace(/\s+/g, '\\s*'), 'i');
-  });
+  for (let index = 0; index < lines.length; index += 1) {
+    if (skipNext) {
+      skipNext = false;
+      removedAny = true;
+      continue;
+    }
+
+    const current = lines[index];
+    const trimmed = typeof current === 'string' ? current.trim() : '';
+
+    if (!trimmed) {
+      if (skipping) {
+        removedAny = true;
+        continue;
+      }
+      cleaned.push(trimmed);
+      continue;
+    }
+
+    if (!skipping) {
+      cleaned.push(trimmed);
+      continue;
+    }
+
+    const processed = stripGlaspMetadataPrefix(trimmed, removedAny);
+    if (processed.skipNextLine) {
+      skipNext = true;
+    }
+
+    if (processed.text) {
+      cleaned.push(processed.text);
+      skipping = false;
+    } else if (!processed.removed) {
+      cleaned.push(trimmed);
+      skipping = false;
+    }
+
+    if (processed.removed) {
+      removedAny = true;
+    }
+  }
+
+  return cleaned;
+}
+
+function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
+  if (typeof line !== 'string') {
+    return { text: '', removed: false, skipNextLine: false };
+  }
 
   const monthNames = [
     'january',
@@ -600,76 +635,125 @@ function stripLeadingGlaspMetadataLines(lines) {
   ];
 
   const datePattern = new RegExp(
-    `^(?:${monthNames.join('|')})\\s+\\d{1,2},\\s*\\d{4}$`,
+    `^(?:${monthNames.join('|')})\\s+\\d{1,2},\\s*\\d{4}`,
     'i'
   );
 
-  let index = 0;
+  const tokenPatterns = [
+    /^glasp\s*reader/i,
+    /^youtube\s*transcript\s*&\s*summary/i,
+    /^&\s*summary/i,
+    /^youtube\s*video\s*player/i,
+    /^transcripts?/i,
+    /^share\s*video/i,
+    /^download\s*\.?srt/i,
+    /^copy(?:\s*transcript)?/i,
+    /^summarize\s*transcript/i,
+    /^english\s*\(auto-generated\)/i,
+    /^share\s*this\s*page/i,
+    /^get\s*(?:youtube\s*)?video\s*transcript\s*&\s*summary/i,
+    /^get\s*transcript\s*&\s*summary/i
+  ];
+
+  let working = line.trimStart();
   let removedAny = false;
-  let skipNext = false;
+  let skipNextLine = false;
 
-  while (index < lines.length) {
-    if (skipNext) {
-      skipNext = false;
+  for (let iteration = 0; iteration < 50; iteration += 1) {
+    if (!working) {
+      break;
+    }
+
+    let matched = false;
+
+    const hashtagMatch = working.match(/^#[^\s#]+/);
+    if (hashtagMatch) {
+      working = working.slice(hashtagMatch[0].length).trimStart();
       removedAny = true;
-      index += 1;
-      continue;
+      matched = true;
     }
 
-    const current = lines[index];
-    const trimmed = typeof current === 'string' ? current.trim() : '';
-    if (!trimmed) {
+    if (!matched) {
+      const dateMatch = working.match(datePattern);
+      if (dateMatch) {
+        working = working.slice(dateMatch[0].length).trimStart();
+        removedAny = true;
+        matched = true;
+      }
+    }
+
+    if (!matched) {
+      const numericDateMatch = working.match(/^\d{1,2},\s*\d{4}/);
+      if (numericDateMatch) {
+        working = working.slice(numericDateMatch[0].length).trimStart();
+        removedAny = true;
+        matched = true;
+      }
+    }
+
+    if (!matched) {
+      for (const pattern of tokenPatterns) {
+        const tokenMatch = working.match(pattern);
+        if (tokenMatch) {
+          working = working.slice(tokenMatch[0].length).trimStart();
+          removedAny = true;
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
+      const byMatch = working.match(/^by(?:\b|\s+|(?=[A-Z#]))/i);
+      if (byMatch) {
+        working = working.slice(byMatch[0].length);
+        working = working.trimStart();
+        removedAny = true;
+        matched = true;
+
+        const nameMatch = working.match(/^[A-Z][A-Za-z0-9'._-]*(?:\s+[A-Za-z0-9'._-]+)*/);
+        if (nameMatch) {
+          working = working.slice(nameMatch[0].length);
+        } else {
+          skipNextLine = true;
+        }
+
+        working = working.trimStart();
+      }
+    }
+
+    if (!matched && removedAny) {
+      const videoMatch = working.match(/^video/i);
+      if (videoMatch) {
+        const remainder = working.slice(videoMatch[0].length).trimStart();
+        if (/^download/i.test(remainder)) {
+          working = remainder;
+          matched = true;
+        }
+      }
+    }
+
+    if (!matched && /^s$/i.test(working)) {
+      working = '';
       removedAny = true;
-      index += 1;
-      continue;
+      matched = true;
     }
 
-    const lower = trimmed.toLowerCase();
-
-    if (/^#\S+/.test(trimmed)) {
-      removedAny = true;
-      index += 1;
-      continue;
+    if (!matched && removedAny && working && (working[0] === 's' || working[0] === 'S')) {
+      working = working.slice(1).trimStart();
+      matched = true;
     }
 
-    if (keywordSet.has(lower) || combinedKeywordPatterns.some((pattern) => pattern.test(trimmed))) {
-      removedAny = true;
-      index += 1;
-      continue;
+    if (!matched) {
+      break;
     }
-
-    if (lower === 'by') {
-      skipNext = true;
-      index += 1;
-      continue;
-    }
-
-    if (lower.startsWith('by ')) {
-      removedAny = true;
-      index += 1;
-      continue;
-    }
-
-    const nextLine = typeof lines[index + 1] === 'string' ? lines[index + 1].trim() : '';
-    if (
-      datePattern.test(trimmed) &&
-      (removedAny || /^(?:by\b|#|share\b|download\b|copy\b|summarize\b)/i.test(nextLine))
-    ) {
-      removedAny = true;
-      index += 1;
-      continue;
-    }
-
-    if (trimmed === 's' && removedAny) {
-      removedAny = true;
-      index += 1;
-      continue;
-    }
-
-    break;
   }
 
-  return lines.slice(index);
+  return {
+    text: working.trimStart(),
+    removed: removedAny,
+    skipNextLine
+  };
 }
 
 function truncateMarketingContent(text) {

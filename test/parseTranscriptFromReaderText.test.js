@@ -107,3 +107,35 @@ test('stripLeadingGlaspMetadataLines removes glued metadata tokens', () => {
 
   assert.deepStrictEqual(stripped, ['Opening line of the transcript.']);
 });
+
+test('stripLeadingGlaspMetadataLines trims fused metadata and preserves transcript', () => {
+  const lines = [
+    '#philosophaireSeptember 23, 2025#philosophairesShare VideoDownload .srtCopyAs you get older, you start seeing things differently.'
+  ];
+
+  const stripped = stripLeadingGlaspMetadataLines(lines);
+
+  assert.deepStrictEqual(stripped, [
+    'As you get older, you start seeing things differently.'
+  ]);
+});
+
+test('parseTranscriptFromReaderText handles fused metadata header text', () => {
+  const pageText = [
+    'Glasp Reader',
+    'YouTube Transcript & Summary',
+    '#philosophaireSeptember 23, 2025#philosophairesShare VideoDownload .srtCopy',
+    'As you get older, you start seeing things differently.',
+    'You notice how people affect your peace.'
+  ].join('\n');
+
+  const parsed = parseTranscriptFromReaderText(pageText);
+
+  assert.strictEqual(
+    parsed,
+    [
+      'As you get older, you start seeing things differently.',
+      'You notice how people affect your peace.'
+    ].join('\n')
+  );
+});
