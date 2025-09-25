@@ -120,6 +120,16 @@ test('stripLeadingGlaspMetadataLines trims fused metadata and preserves transcri
   ]);
 });
 
+test('stripLeadingGlaspMetadataLines removes fused title/date metadata before controls', () => {
+  const lines = [
+    'Solve Any Problem With This 1 Simple MethodApril 27, 2025byGrindBuddySolve Any Problem With This 1 Simple MethodsShare VideoDownload .srtCopygo into the silence go and sit down quietly.'
+  ];
+
+  const stripped = stripLeadingGlaspMetadataLines(lines);
+
+  assert.deepStrictEqual(stripped, ['go into the silence go and sit down quietly.']);
+});
+
 test('parseTranscriptFromReaderText handles fused metadata header text', () => {
   const pageText = [
     'Glasp Reader',

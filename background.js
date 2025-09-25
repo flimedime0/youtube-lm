@@ -704,6 +704,21 @@ function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
     }
 
     if (!matched) {
+      const fusedControlMatch = working.match(
+        /(?:share\s*video|download\s*\.?srt|copy(?:\s*transcript)?|summarize\s*transcript)/i
+      );
+      if (fusedControlMatch && fusedControlMatch.index !== undefined && fusedControlMatch.index < 200) {
+        const sliceIndex = fusedControlMatch.index + fusedControlMatch[0].length;
+        const remainder = working.slice(sliceIndex).trimStart();
+        if (remainder) {
+          working = remainder;
+          removedAny = true;
+          matched = true;
+        }
+      }
+    }
+
+    if (!matched) {
       const byMatch = working.match(/^by(?:\b|\s+|(?=[A-Z#]))/i);
       if (byMatch) {
         working = working.slice(byMatch[0].length);
