@@ -156,6 +156,15 @@ async function fetchTranscriptFromGlasp(videoUrl) {
   }
 }
 
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    parseTranscriptFromReaderText,
+    stripLeadingGlaspMetadataLines,
+    extractPlayerResponseFromWatchHtml,
+    extractJsonObjectFromAssignment
+  };
+}
+
 async function openChatGPTTab(prompt, preferredHost, autoSend) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
     throw new Error('Invalid prompt supplied.');
@@ -541,12 +550,126 @@ function parseTranscriptFromReaderText(pageText) {
       )
   );
 
-  const fallbackTranscript = fallbackLines.join('\n').trim();
+  const strippedFallbackLines = stripLeadingGlaspMetadataLines(fallbackLines);
+  const fallbackTranscript = strippedFallbackLines.join('\n').trim();
   if (!fallbackTranscript) {
     throw new Error('Transcript data not found on Glasp for this video.');
   }
 
   return fallbackTranscript;
+}
+
+function stripLeadingGlaspMetadataLines(lines) {
+  if (!Array.isArray(lines)) {
+    return [];
+  }
+
+  const metadataKeywords = [
+    'youtube transcript & summary',
+    '& summary',
+    'summary',
+    'transcripts',
+    'youtube video player',
+    'share video',
+    'download .srt',
+    'copy transcript',
+    'copy',
+    'summarize transcript',
+    'get transcript & summary'
+  ];
+
+  const keywordSet = new Set(metadataKeywords.map((value) => value.toLowerCase()));
+  const combinedKeywordPatterns = metadataKeywords.map((keyword) => {
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(escaped.replace(/\s+/g, '\\s*'), 'i');
+  });
+
+  const monthNames = [
+    'january',
+    'february',
+    'march',
+    'april',
+    'may',
+    'june',
+    'july',
+    'august',
+    'september',
+    'october',
+    'november',
+    'december'
+  ];
+
+  const datePattern = new RegExp(
+    `^(?:${monthNames.join('|')})\\s+\\d{1,2},\\s*\\d{4}$`,
+    'i'
+  );
+
+  let index = 0;
+  let removedAny = false;
+  let skipNext = false;
+
+  while (index < lines.length) {
+    if (skipNext) {
+      skipNext = false;
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    const current = lines[index];
+    const trimmed = typeof current === 'string' ? current.trim() : '';
+    if (!trimmed) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    const lower = trimmed.toLowerCase();
+
+    if (/^#\S+/.test(trimmed)) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    if (keywordSet.has(lower) || combinedKeywordPatterns.some((pattern) => pattern.test(trimmed))) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    if (lower === 'by') {
+      skipNext = true;
+      index += 1;
+      continue;
+    }
+
+    if (lower.startsWith('by ')) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    const nextLine = typeof lines[index + 1] === 'string' ? lines[index + 1].trim() : '';
+    if (
+      datePattern.test(trimmed) &&
+      (removedAny || /^(?:by\b|#|share\b|download\b|copy\b|summarize\b)/i.test(nextLine))
+    ) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    if (trimmed === 's' && removedAny) {
+      removedAny = true;
+      index += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return lines.slice(index);
 }
 
 function truncateMarketingContent(text) {
@@ -788,34 +911,52 @@ function extractJsonObjectFromAssignment(source, marker) {
   }
 
   let cursor = index + marker.length;
-  const fallbackPattern = /^(?:window\[(?:"ytInitialPlayerResponse"|'ytInitialPlayerResponse')\]|window\.ytInitialPlayerResponse|ytInitialPlayerResponse)\s*\|\|/;
 
   while (cursor < source.length) {
-    while (cursor < source.length && /[\s=;]+/.test(source[cursor])) {
-      cursor += 1;
-    }
+    const current = source[cursor];
 
-    if (cursor >= source.length) {
-      return null;
-    }
-
-    if (source[cursor] === '(' || source[cursor] === ')') {
+    if (/\s/.test(current) || current === '=') {
       cursor += 1;
       continue;
     }
 
-    const remaining = source.slice(cursor);
-    const fallbackMatch = remaining.match(fallbackPattern);
-    if (fallbackMatch) {
-      cursor += fallbackMatch[0].length;
+    if (current === '(' || current === '!' || current === ')') {
+      cursor += 1;
       continue;
     }
 
-    if (remaining.startsWith('JSON.parse')) {
+    if (current === '{') {
+      const jsonText = extractBalancedJson(source, cursor);
+      if (!jsonText) {
+        return null;
+      }
+      try {
+        return JSON.parse(jsonText);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    if (current === '"' || current === '\'') {
+      const literal = extractJsStringLiteral(source, cursor);
+      if (!literal) {
+        return null;
+      }
+      const decoded = decodeJsStringLiteral(literal);
+      if (decoded === null) {
+        return null;
+      }
+      try {
+        return JSON.parse(decoded);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    if (source.startsWith('JSON.parse', cursor)) {
       const openParenIndex = source.indexOf('(', cursor);
       if (openParenIndex === -1) {
-        cursor += 'JSON.parse'.length;
-        continue;
+        return null;
       }
 
       let argumentIndex = openParenIndex + 1;
@@ -824,68 +965,102 @@ function extractJsonObjectFromAssignment(source, marker) {
       }
 
       if (argumentIndex >= source.length) {
-        cursor = openParenIndex + 1;
-        continue;
+        return null;
       }
 
       const argumentStart = source[argumentIndex];
       if (argumentStart === '"' || argumentStart === '\'') {
         const literal = extractJsStringLiteral(source, argumentIndex);
-        if (literal) {
-          const decoded = decodeJsStringLiteral(literal);
-          if (decoded !== null) {
-            try {
-              return JSON.parse(decoded);
-            } catch (error) {
-              cursor = argumentIndex + literal.length;
-              continue;
-            }
-          }
-          cursor = argumentIndex + literal.length;
-          continue;
+        if (!literal) {
+          return null;
+        }
+        const decoded = decodeJsStringLiteral(literal);
+        if (decoded === null) {
+          return null;
+        }
+        try {
+          return JSON.parse(decoded);
+        } catch (error) {
+          return null;
         }
       }
+    }
 
-      cursor = openParenIndex + 1;
+    if (/[A-Za-z0-9_$.[\]]/.test(current)) {
+      cursor = advancePastIdentifierChain(source, cursor);
       continue;
     }
 
-    const firstChar = source[cursor];
-    if (firstChar === '{') {
-      const jsonText = extractBalancedJson(source, cursor);
-      if (jsonText) {
-        try {
-          return JSON.parse(jsonText);
-        } catch (error) {
-          cursor += jsonText.length;
-          continue;
-        }
-      }
+    if (current === '|' || current === '&' || current === '?' || current === ':' || current === '+') {
       cursor += 1;
       continue;
-    }
-
-    if (firstChar === '"' || firstChar === '\'') {
-      const literal = extractJsStringLiteral(source, cursor);
-      if (literal) {
-        const decoded = decodeJsStringLiteral(literal);
-        if (decoded !== null) {
-          try {
-            return JSON.parse(decoded);
-          } catch (error) {
-            cursor += literal.length;
-            continue;
-          }
-        }
-        cursor += literal.length;
-        continue;
-      }
     }
 
     cursor += 1;
   }
 
   return null;
+}
+
+function advancePastIdentifierChain(source, startIndex) {
+  let cursor = startIndex;
+  while (cursor < source.length) {
+    const character = source[cursor];
+    if (/[A-Za-z0-9_$]/.test(character)) {
+      cursor += 1;
+      continue;
+    }
+
+    if (character === '.') {
+      cursor += 1;
+      continue;
+    }
+
+    if (character === '[') {
+      cursor += 1;
+      while (cursor < source.length && /\s/.test(source[cursor])) {
+        cursor += 1;
+      }
+
+      if (cursor >= source.length) {
+        return cursor;
+      }
+
+      const bracketStart = source[cursor];
+      if (bracketStart === '"' || bracketStart === '\'') {
+        const literal = extractJsStringLiteral(source, cursor);
+        if (!literal) {
+          return cursor;
+        }
+        cursor += literal.length;
+        while (cursor < source.length && /\s/.test(source[cursor])) {
+          cursor += 1;
+        }
+        if (source[cursor] === ']') {
+          cursor += 1;
+          continue;
+        }
+        return cursor;
+      }
+
+      while (cursor < source.length && source[cursor] !== ']') {
+        cursor += 1;
+      }
+      if (source[cursor] === ']') {
+        cursor += 1;
+      }
+      continue;
+    }
+
+    if (character === ']') {
+      cursor += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return cursor;
 }
 
 function extractBalancedJson(source, startIndex) {

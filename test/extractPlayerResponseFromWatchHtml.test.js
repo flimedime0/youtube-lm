@@ -3,58 +3,55 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const noop = () => {};
-
-global.chrome = {
-  runtime: { onMessage: { addListener: noop } },
-  tabs: {
-    onUpdated: { addListener: noop, removeListener: noop },
-    onRemoved: { addListener: noop },
-    create: async () => ({ id: 1 }),
-    get: async () => ({ url: '' }),
-    remove: async () => {}
-  },
-  scripting: {
-    executeScript: async () => [{ result: null }]
-  },
-  storage: {
-    session: {
-      get: async () => ({}),
-      set: async () => {},
-      remove: async () => {}
+function createChromeStub() {
+  return {
+    runtime: { onMessage: { addListener: () => {} } },
+    tabs: {
+      onUpdated: { addListener: () => {}, removeListener: () => {} },
+      onRemoved: { addListener: () => {}, removeListener: () => {} },
+      create: async () => ({}),
+      remove: async () => {},
+      get: async () => ({})
+    },
+    storage: {
+      session: {
+        async get() {
+          return {};
+        },
+        async set() {},
+        async remove() {}
+      },
+      local: {
+        async get() {
+          return {};
+        },
+        async set() {},
+        async remove() {}
+      }
+    },
+    scripting: {
+      async executeScript() {
+        return [{ result: '' }];
+      }
     }
-  }
-};
+  };
+}
+
+if (typeof global.chrome === 'undefined') {
+  global.chrome = createChromeStub();
+}
 
 const { extractPlayerResponseFromWatchHtml } = require('../background.js');
 
-test('extractPlayerResponseFromWatchHtml parses JSON after fallback expression', () => {
-  const html = `
-    <html>
-      <head>
-        <script>
-          var ytInitialPlayerResponse = window.ytInitialPlayerResponse || {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://example.com/captions"}]}}};
-        </script>
-      </head>
-    </html>
-  `;
-
-  const result = extractPlayerResponseFromWatchHtml(html);
-  assert.ok(result, 'Expected player response to be parsed');
-  assert.strictEqual(
-    result.captions.playerCaptionsTracklistRenderer.captionTracks[0].baseUrl,
-    'https://example.com/captions'
-  );
-});
-
-test('extractPlayerResponseFromWatchHtml parses JSON after window fallback in watch page fixture', () => {
-  const fixturePath = path.join(__dirname, 'fixtures/watch-with-fallback.html');
+test('extractPlayerResponseFromWatchHtml parses assignments with fallback expressions', () => {
+  const fixturePath = path.join(__dirname, 'fixtures', 'watch-with-fallback.html');
   const html = fs.readFileSync(fixturePath, 'utf8');
 
-  const result = extractPlayerResponseFromWatchHtml(html);
-  assert.ok(result, 'Expected player response to be parsed from fixture');
-  assert.strictEqual(
-    result.captions.playerCaptionsTracklistRenderer.captionTracks[0].baseUrl,
+  const playerResponse = extractPlayerResponseFromWatchHtml(html);
+
+  assert.ok(playerResponse, 'Expected a player response object');
+  assert.deepStrictEqual(
+    playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.[0]?.baseUrl,
     'https://example.com/captions'
   );
 });

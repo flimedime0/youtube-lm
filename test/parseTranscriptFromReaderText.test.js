@@ -1,46 +1,109 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-global.chrome = {
-  runtime: {
-    onMessage: { addListener: () => {} }
-  },
-  tabs: {
-    onUpdated: { addListener: () => {} },
-    onRemoved: { addListener: () => {} },
-    create: async () => ({ id: 1 }),
-    remove: async () => {},
-    get: async () => ({})
-  },
-  storage: {
-    session: {
-      get: async () => ({}),
-      set: async () => {},
-      remove: async () => {}
+function createChromeStub() {
+  return {
+    runtime: { onMessage: { addListener: () => {} } },
+    tabs: {
+      onUpdated: { addListener: () => {}, removeListener: () => {} },
+      onRemoved: { addListener: () => {}, removeListener: () => {} },
+      create: async () => ({}),
+      remove: async () => {},
+      get: async () => ({})
+    },
+    storage: {
+      session: {
+        async get() {
+          return {};
+        },
+        async set() {},
+        async remove() {}
+      },
+      local: {
+        async get() {
+          return {};
+        },
+        async set() {},
+        async remove() {}
+      }
+    },
+    scripting: {
+      async executeScript() {
+        return [{ result: '' }];
+      }
     }
-  }
-};
+  };
+}
 
-const { parseTranscriptFromReaderText } = require('../background.js');
+if (typeof global.chrome === 'undefined') {
+  global.chrome = createChromeStub();
+}
 
-test('parseTranscriptFromReaderText strips leading Glasp metadata headers', () => {
-  const pageText = [
-    'Transcript',
+const {
+  parseTranscriptFromReaderText,
+  stripLeadingGlaspMetadataLines
+} = require('../background.js');
+
+test('stripLeadingGlaspMetadataLines removes Glasp header metadata', () => {
+  const lines = [
     '#philosophaire',
-    '#stoicism',
-    'May 5, 2024',
+    'September 18, 2025',
     'by',
     'Philosophaire',
-    'Host: Welcome back to the show.',
-    'Guest: Thanks for inviting me.'
+    '#philosophaires',
+    'Share Video',
+    'Download .srt',
+    'Copy',
+    'As you get older, you start seeing things differently.'
+  ];
+
+  const stripped = stripLeadingGlaspMetadataLines(lines);
+
+  assert.deepStrictEqual(stripped, [
+    'As you get older, you start seeing things differently.'
+  ]);
+});
+
+test('parseTranscriptFromReaderText drops Glasp metadata headers', () => {
+  const pageText = [
+    'Glasp Reader',
+    'YouTube Transcript & Summary',
+    '#philosophaire',
+    'September 18, 2025',
+    'by',
+    'Philosophaire',
+    'YouTube video player',
+    '#philosophaires',
+    'Transcripts',
+    'Share Video',
+    'Download .srt',
+    'Copy Transcript',
+    'Summarize Transcript',
+    'English (auto-generated)',
+    'As you get older, you start seeing things differently.',
+    'You notice how people affect your peace.'
   ].join('\n');
 
-  const transcript = parseTranscriptFromReaderText(pageText);
+  const parsed = parseTranscriptFromReaderText(pageText);
 
-  assert.ok(
-    transcript.startsWith('Host: Welcome back to the show.'),
-    `Expected transcript to start with spoken text, received: ${transcript}`
+  assert.strictEqual(
+    parsed,
+    [
+      'As you get older, you start seeing things differently.',
+      'You notice how people affect your peace.'
+    ].join('\n')
   );
-  assert.ok(!/philosophaire/i.test(transcript));
-  assert.ok(!/May 5, 2024/.test(transcript));
+});
+
+test('stripLeadingGlaspMetadataLines removes glued metadata tokens', () => {
+  const lines = [
+    '#creatorShare VideoDownload .srtCopy',
+    'September 19, 2025',
+    'by Creator Name',
+    'Opening line of the transcript.'
+  ];
+
+  const stripped = stripLeadingGlaspMetadataLines(lines);
+
+  assert.deepStrictEqual(stripped, ['Opening line of the transcript.']);
 });
