@@ -9,12 +9,13 @@
     "storage"
   ],
   "host_permissions": [
-    "https://www.youtube.com/*",
+    "https://*.youtube.com/*",
     "https://chatgpt.com/*",
     "https://glasp.co/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
