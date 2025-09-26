@@ -10,41 +10,49 @@ let pendingPrompts = new Map();
 let pendingLoaded = false;
 let pendingLoadingPromise = null;
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === 'fetchTranscriptFromGlasp' && typeof message.videoUrl === 'string') {
-    (async () => {
-      try {
-        const transcript = await fetchTranscriptForVideo(message.videoUrl);
-        sendResponse({ status: 'success', transcript });
-      } catch (error) {
-        console.error('Failed to fetch transcript from Glasp:', error);
-        sendResponse({
-          status: 'error',
-          error: error instanceof Error ? error.message : 'Unable to retrieve transcript from Glasp.'
-        });
-      }
-    })();
-    return true;
-  }
+const chromeApiAvailable = typeof chrome !== 'undefined' &&
+  chrome !== null &&
+  typeof chrome === 'object' &&
+  typeof chrome.runtime === 'object' &&
+  typeof chrome.runtime.onMessage === 'object';
 
-  if (message?.type === 'openChatGPT' && typeof message.prompt === 'string') {
-    (async () => {
-      try {
-        const response = await openChatGPTTab(message.prompt, message.preferredHost, message.autoSend);
-        sendResponse(response);
-      } catch (error) {
-        console.error('Failed to open ChatGPT tab:', error);
-        sendResponse({
-          status: 'error',
-          error: error instanceof Error ? error.message : 'Unable to open ChatGPT.'
-        });
-      }
-    })();
-    return true;
-  }
+if (chromeApiAvailable) {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === 'fetchTranscriptFromGlasp' && typeof message.videoUrl === 'string') {
+      (async () => {
+        try {
+          const transcript = await fetchTranscriptForVideo(message.videoUrl);
+          sendResponse({ status: 'success', transcript });
+        } catch (error) {
+          console.error('Failed to fetch transcript from Glasp:', error);
+          sendResponse({
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unable to retrieve transcript from Glasp.'
+          });
+        }
+      })();
+      return true;
+    }
 
-  return false;
-});
+    if (message?.type === 'openChatGPT' && typeof message.prompt === 'string') {
+      (async () => {
+        try {
+          const response = await openChatGPTTab(message.prompt, message.preferredHost, message.autoSend);
+          sendResponse(response);
+        } catch (error) {
+          console.error('Failed to open ChatGPT tab:', error);
+          sendResponse({
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unable to open ChatGPT.'
+          });
+        }
+      })();
+      return true;
+    }
+
+    return false;
+  });
+}
 
 async function fetchTranscriptForVideo(videoUrl) {
   if (typeof videoUrl !== 'string' || !videoUrl.trim()) {
@@ -63,58 +71,60 @@ async function fetchTranscriptForVideo(videoUrl) {
   return fetchTranscriptFromGlasp(videoUrl);
 }
 
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  try {
-    await ensurePendingPromptsLoaded();
-  } catch (error) {
-    console.error('Unable to load pending prompts from storage.', error);
-    return;
-  }
-
-  if (!pendingPrompts.has(tabId)) {
-    return;
-  }
-
-  const updatedUrl = changeInfo.url || tab?.url || '';
-  if (!isChatUrl(updatedUrl)) {
-    return;
-  }
-
-  if (changeInfo.status === 'complete' || changeInfo.url) {
-    scheduleInjectionAttempt(tabId, 0);
-  }
-});
-
-chrome.tabs.onRemoved.addListener(async (tabId) => {
-  activeInjections.delete(tabId);
-  try {
-    await removePendingPrompt(tabId);
-  } catch (error) {
-    console.error('Failed to clean up pending prompt for closed tab', tabId, error);
-  }
-});
-
-(async () => {
-  try {
-    await ensurePendingPromptsLoaded();
-  } catch (error) {
-    console.error('Failed to load pending prompts during startup.', error);
-    return;
-  }
-
-  for (const tabId of pendingPrompts.keys()) {
+if (chromeApiAvailable && typeof chrome.tabs === 'object' && chrome.tabs !== null) {
+  chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     try {
-      const tab = await chrome.tabs.get(tabId);
-      if (tab?.url && isChatUrl(tab.url)) {
-        scheduleInjectionAttempt(tabId, RETRY_DELAY_MS);
-      } else {
+      await ensurePendingPromptsLoaded();
+    } catch (error) {
+      console.error('Unable to load pending prompts from storage.', error);
+      return;
+    }
+
+    if (!pendingPrompts.has(tabId)) {
+      return;
+    }
+
+    const updatedUrl = changeInfo.url || tab?.url || '';
+    if (!isChatUrl(updatedUrl)) {
+      return;
+    }
+
+    if (changeInfo.status === 'complete' || changeInfo.url) {
+      scheduleInjectionAttempt(tabId, 0);
+    }
+  });
+
+  chrome.tabs.onRemoved.addListener(async (tabId) => {
+    activeInjections.delete(tabId);
+    try {
+      await removePendingPrompt(tabId);
+    } catch (error) {
+      console.error('Failed to clean up pending prompt for closed tab', tabId, error);
+    }
+  });
+
+  (async () => {
+    try {
+      await ensurePendingPromptsLoaded();
+    } catch (error) {
+      console.error('Failed to load pending prompts during startup.', error);
+      return;
+    }
+
+    for (const tabId of pendingPrompts.keys()) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab?.url && isChatUrl(tab.url)) {
+          scheduleInjectionAttempt(tabId, RETRY_DELAY_MS);
+        } else {
+          await removePendingPrompt(tabId);
+        }
+      } catch (error) {
         await removePendingPrompt(tabId);
       }
-    } catch (error) {
-      await removePendingPrompt(tabId);
     }
-  }
-})();
+  })();
+}
 
 async function fetchTranscriptFromGlasp(videoUrl) {
   const targetUrl = `${GLASP_READER_BASE_URL}${encodeURIComponent(videoUrl)}`;
@@ -2238,6 +2248,1381 @@ async function fetchTranscriptFromWatchPage(videoId) {
   if (!playerResponse) {
     try {
       playerResponse = await fetchPlayerResponseFromWatchTab(videoId, watchUrlCandidates);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Unable to load watch page for transcript extraction.');
+    }
+  }
+
+  if (!playerResponse) {
+    throw lastError || new Error('Unable to locate player response in watch page HTML.');
+  }
+
+  const captionTrack = selectBestCaptionTrack(playerResponse);
+  if (!captionTrack || typeof captionTrack.baseUrl !== 'string') {
+    throw new Error('No caption track with a valid base URL was found in the player response.');
+  }
+
+  const requestUrl = buildTimedTextRequestUrl(captionTrack.baseUrl);
+  if (!requestUrl) {
+    throw new Error('Unable to normalize the caption track URL for transcript retrieval.');
+  }
+
+  const timedTextData = await fetchTimedTextJson(requestUrl);
+  if (!timedTextData) {
+    throw new Error('Timed text response from YouTube was empty.');
+  }
+
+  const formatted = parseTimedTextJson(timedTextData);
+  if (!formatted) {
+    throw new Error('Unable to format timed text transcript from YouTube watch page.');
+  }
+
+  return formatted;
+}
+
+function buildWatchPageUrlCandidates(videoId) {
+  const timestampParam = String(Math.max(1, Math.floor(Date.now() / 1000)));
+
+  return Array.from(
+    new Set(
+      [
+        buildWatchPageUrl(videoId),
+        buildWatchPageUrl(videoId, {
+          app: 'desktop',
+          persist_app: '1',
+          has_verified: '1',
+          hl: 'en',
+          gl: 'US',
+          persist_hl: '1',
+          persist_gl: '1',
+          bpctr: timestampParam
+        }),
+        buildWatchPageUrl(videoId, null, 'https://m.youtube.com/watch')
+      ].filter(Boolean)
+    )
+  );
+}
+
+async function fetchPlayerResponseFromWatchTab(videoId, candidates) {
+  const watchUrls = Array.isArray(candidates) && candidates.length > 0 ? candidates : buildWatchPageUrlCandidates(videoId);
+  let lastError = null;
+
+  for (const watchUrl of watchUrls) {
+    if (!watchUrl) {
+      continue;
+    }
+
+    let tab;
+    try {
+      tab = await chrome.tabs.create({ url: watchUrl, active: false });
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Unable to open YouTube watch page.');
+      continue;
+    }
+
+    const tabId = tab?.id;
+    if (!tabId) {
+      lastError = new Error('Unable to open YouTube watch page.');
+      continue;
+    }
+
+    let closed = false;
+    const cleanup = async () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch (error) {
+        if (error && typeof error.message === 'string' && /No tab with id/.test(error.message)) {
+          return;
+        }
+        console.debug('Failed to close YouTube watch tab', error);
+      }
+    };
+
+    try {
+      await waitForTabComplete(tabId, WATCH_PAGE_LOAD_TIMEOUT_MS, 'YouTube watch page');
+      const evaluation = await evaluateWatchTabForPlayerResponse(tabId);
+      const parsed = parseWatchTabEvaluation(evaluation);
+      if (parsed) {
+        return parsed;
+      }
+      lastError = new Error('Watch tab did not expose a player response payload.');
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Unable to extract player response from watch tab.');
+    } finally {
+      await cleanup();
+    }
+  }
+
+  throw lastError || new Error('Unable to extract player response from watch tab.');
+}
+
+async function evaluateWatchTabForPlayerResponse(tabId) {
+  try {
+    const [executionResult] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => {
+        const result = {
+          playerResponseJson: null,
+          playerResponseError: null,
+          html: null,
+          htmlError: null
+        };
+
+        try {
+          if (window?.ytInitialPlayerResponse && typeof window.ytInitialPlayerResponse === 'object') {
+            result.playerResponseJson = JSON.stringify(window.ytInitialPlayerResponse);
+          } else if (window?.ytplayer?.config?.args?.player_response) {
+            result.playerResponseJson = window.ytplayer.config.args.player_response;
+          }
+        } catch (error) {
+          result.playerResponseError = error && typeof error.message === 'string' ? error.message : String(error);
+        }
+
+        if (!result.playerResponseJson) {
+          try {
+            const doc = document?.documentElement;
+            result.html = doc ? doc.innerHTML : '';
+          } catch (error) {
+            result.htmlError = error && typeof error.message === 'string' ? error.message : String(error);
+          }
+        }
+
+        return result;
+      }
+    });
+
+    return executionResult?.result ?? null;
+  } catch (error) {
+    throw error instanceof Error ? error : new Error('Unable to evaluate watch page for player response.');
+  }
+}
+
+function parseWatchTabEvaluation(evaluation) {
+  if (!evaluation || typeof evaluation !== 'object') {
+    throw new Error('Watch tab did not return evaluation data.');
+  }
+
+  const { playerResponseJson, html, playerResponseError, htmlError } = evaluation;
+
+  if (typeof playerResponseJson === 'string' && playerResponseJson.trim()) {
+    try {
+      return JSON.parse(playerResponseJson);
+    } catch (error) {
+      if (typeof html === 'string' && html.trim()) {
+        const parsed = extractPlayerResponseFromWatchHtml(html);
+        if (parsed) {
+          return parsed;
+        }
+      }
+      throw new Error('Unable to parse player response JSON from watch tab.');
+    }
+  }
+
+  if (typeof html === 'string' && html.trim()) {
+    const parsed = extractPlayerResponseFromWatchHtml(html);
+    if (parsed) {
+      return parsed;
+    }
+    throw new Error('Player response not found in watch tab HTML.');
+  }
+
+  if (typeof playerResponseError === 'string' && playerResponseError) {
+    throw new Error(`Watch tab reported player response error: ${playerResponseError}`);
+  }
+
+  if (typeof htmlError === 'string' && htmlError) {
+    throw new Error(`Watch tab reported HTML extraction error: ${htmlError}`);
+  }
+
+  throw new Error('Watch tab did not expose player response data.');
+}
+
+async function fetchTranscriptFromTimedTextTrackList(videoId) {
+  if (!videoId) {
+    return '';
+  }
+
+  const listUrl = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&type=list`;
+
+  const response = await fetch(listUrl, { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`Timed text track list request failed with status ${response.status}`);
+  }
+
+  const xml = await response.text();
+  const tracks = parseTimedTextTrackListXml(xml);
+  if (tracks.length === 0) {
+    throw new Error('Timed text track list did not contain any tracks.');
+  }
+
+  const scoredTracks = tracks
+    .map((track, index) => ({ track, index, score: scoreTimedTextTrack(track) }))
+    .filter((entry) => Number.isFinite(entry.score))
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return a.index - b.index;
+    });
+
+  const bestTrack = scoredTracks[0]?.track;
+  if (!bestTrack) {
+    throw new Error('Unable to select a caption track from the timed text track list.');
+  }
+
+  const requestUrl = buildTimedTextRequestFromTrack(videoId, bestTrack);
+  if (!requestUrl) {
+    throw new Error('Unable to build a timed text request URL from the selected track.');
+  }
+
+  const timedTextData = await fetchTimedTextJson(requestUrl);
+  if (!timedTextData) {
+    throw new Error('Timed text JSON response from track list request was empty.');
+  }
+
+  const formatted = parseTimedTextJson(timedTextData);
+  if (!formatted) {
+    throw new Error('Unable to format timed text transcript from track list request.');
+  }
+
+  return formatted;
+}
+
+function buildWatchPageUrl(videoId, queryOverrides = null, baseUrl = 'https://www.youtube.com/watch') {
+  if (!videoId) {
+    return null;
+  }
+
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set('v', videoId);
+
+    if (queryOverrides && typeof queryOverrides === 'object') {
+      for (const [key, value] of Object.entries(queryOverrides)) {
+        if (value === undefined || value === null) {
+          continue;
+        }
+        url.searchParams.set(key, String(value));
+      }
+    }
+
+    return url.toString();
+  } catch (error) {
+    return null;
+  }
+}
+
+function extractPlayerResponseFromWatchHtml(html) {
+  if (typeof html !== 'string' || !html) {
+    return null;
+  }
+
+  const assignmentMarkers = [
+    'ytInitialPlayerResponse =',
+    'var ytInitialPlayerResponse =',
+    'let ytInitialPlayerResponse =',
+    'const ytInitialPlayerResponse =',
+    'window["ytInitialPlayerResponse"] =',
+    'window.ytInitialPlayerResponse =',
+    'self.ytInitialPlayerResponse =',
+    'this.ytInitialPlayerResponse ='
+  ];
+  for (const marker of assignmentMarkers) {
+    const parsed = extractJsonObjectFromAssignment(html, marker);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  const inlineMatch = html.match(/"playerResponse":\s*(\{.*?\})\s*,\s*"responseContext"/s);
+  if (inlineMatch) {
+    try {
+      return JSON.parse(inlineMatch[1]);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function isConsentInterstitialHtml(html) {
+  if (typeof html !== 'string' || !html) {
+    return false;
+  }
+
+  const lower = html.slice(0, 50000).toLowerCase();
+  if (!lower.includes('consent.youtube.com') && !lower.includes('consent.google.com')) {
+    return false;
+  }
+
+  if (lower.includes('before you continue to youtube')) {
+    return true;
+  }
+
+  if (/<form[^>]+action="https:\/\/consent\.youtube\.com\//i.test(html)) {
+    return true;
+  }
+
+  return false;
+}
+
+function extractJsonObjectFromAssignment(source, marker) {
+  if (typeof source !== 'string' || !marker) {
+    return null;
+  }
+
+  let searchIndex = 0;
+
+  while (searchIndex < source.length) {
+    const index = source.indexOf(marker, searchIndex);
+    if (index === -1) {
+      break;
+    }
+
+    let cursor = index + marker.length;
+
+    while (cursor < source.length) {
+      const current = source[cursor];
+
+      if (/\s/.test(current) || current === '=') {
+        cursor += 1;
+        continue;
+    }
+
+    if (current === '(' || current === '!' || current === ')') {
+      cursor += 1;
+      continue;
+    }
+
+      if (current === '{') {
+        const jsonText = extractBalancedJson(source, cursor);
+        if (jsonText) {
+          try {
+            return JSON.parse(jsonText);
+          } catch (error) {
+            // continue scanning for other payloads
+          }
+        }
+        cursor += 1;
+        continue;
+      }
+
+      if (current === '"' || current === '\'') {
+        const literal = extractJsStringLiteral(source, cursor);
+        if (!literal) {
+          cursor += 1;
+          continue;
+        }
+        const decoded = decodeJsStringLiteral(literal);
+        if (decoded !== null) {
+          try {
+            return JSON.parse(decoded);
+          } catch (error) {
+            // fall through and continue scanning after the literal
+          }
+        }
+        cursor += literal.length;
+        continue;
+      }
+
+      if (source.startsWith('JSON.parse', cursor)) {
+        const openParenIndex = source.indexOf('(', cursor);
+        if (openParenIndex === -1) {
+          cursor += 'JSON.parse'.length;
+          continue;
+        }
+
+        const argumentInfo = extractJsonParseArgument(source, openParenIndex + 1);
+        if (argumentInfo) {
+          cursor = argumentInfo.cursorAfter;
+          if (argumentInfo.payload !== null) {
+            try {
+              return JSON.parse(argumentInfo.payload);
+            } catch (error) {
+              // continue scanning for additional payloads
+            }
+          }
+          continue;
+        }
+
+        cursor = openParenIndex + 1;
+        continue;
+      }
+
+      if (/[A-Za-z0-9_$.[\]]/.test(current)) {
+        cursor = advancePastIdentifierChain(source, cursor);
+        continue;
+      }
+
+      if (current === '|' || current === '&' || current === '?' || current === ':' || current === '+' || current === '-') {
+        cursor += 1;
+        continue;
+      }
+
+      cursor += 1;
+    }
+
+    searchIndex = index + marker.length;
+  }
+
+  return null;
+}
+
+const JSON_STRING_WRAPPER_SET = new Set(['decodeURIComponent', 'decodeURI', 'unescape', 'atob']);
+
+function extractJsonParseArgument(source, startIndex) {
+  if (typeof source !== 'string' || startIndex >= source.length) {
+    return null;
+  }
+
+  let cursor = startIndex;
+  const wrappers = [];
+
+  while (cursor < source.length) {
+    while (cursor < source.length && /\s/.test(source[cursor])) {
+      cursor += 1;
+    }
+
+    if (cursor >= source.length) {
+      break;
+    }
+
+    const current = source[cursor];
+
+    if (current === '"' || current === '\'') {
+      const literal = extractJsStringLiteral(source, cursor);
+      if (!literal) {
+        return null;
+      }
+
+      cursor += literal.length;
+      const decoded = decodeJsStringLiteral(literal);
+      const payload = decoded === null ? null : applyJsonStringWrappers(decoded, wrappers);
+      const cursorAfter = skipTrailingParensAndWhitespace(source, cursor);
+
+      return {
+        payload,
+        cursorAfter
+      };
+    }
+
+    if (/[A-Za-z_$]/.test(current)) {
+      const identifierStart = cursor;
+      cursor = advancePastIdentifierChain(source, cursor);
+      const identifier = source.slice(identifierStart, cursor);
+
+      if (!JSON_STRING_WRAPPER_SET.has(identifier)) {
+        return null;
+      }
+
+      while (cursor < source.length && /\s/.test(source[cursor])) {
+        cursor += 1;
+      }
+
+      if (source[cursor] !== '(') {
+        return null;
+      }
+
+      cursor += 1;
+      wrappers.push(identifier);
+      continue;
+    }
+
+    if (current === '(') {
+      cursor += 1;
+      continue;
+    }
+
+    if (current === ')') {
+      cursor += 1;
+      continue;
+    }
+
+    return null;
+  }
+
+  return null;
+}
+
+function skipTrailingParensAndWhitespace(source, startIndex) {
+  let cursor = startIndex;
+
+  while (cursor < source.length && /\s/.test(source[cursor])) {
+    cursor += 1;
+  }
+
+  while (cursor < source.length && source[cursor] === ')') {
+    cursor += 1;
+    while (cursor < source.length && /\s/.test(source[cursor])) {
+      cursor += 1;
+    }
+  }
+
+  return cursor;
+}
+
+function applyJsonStringWrappers(value, wrappers) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  if (!Array.isArray(wrappers) || wrappers.length === 0) {
+    return value;
+  }
+
+  let result = value;
+  for (let index = wrappers.length - 1; index >= 0; index -= 1) {
+    result = decodeJsonWrapper(wrappers[index], result);
+    if (result === null) {
+      return null;
+    }
+  }
+
+  return result;
+}
+
+function decodeJsonWrapper(wrapper, value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    switch (wrapper) {
+      case 'decodeURIComponent':
+        return decodeURIComponent(value);
+      case 'decodeURI':
+        return decodeURI(value);
+      case 'unescape':
+        return decodeUsingUnescape(value);
+      case 'atob':
+        return decodeBase64(value);
+      default:
+        return null;
+    }
+  } catch (error) {
+    return null;
+  }
+}
+
+function decodeUsingUnescape(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  let result = value.replace(/%u([0-9A-Fa-f]{4})/g, (_, hex) => {
+    const codePoint = Number.parseInt(hex, 16);
+    if (!Number.isFinite(codePoint)) {
+      return '';
+    }
+    return String.fromCharCode(codePoint);
+  });
+
+  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => {
+    const codePoint = Number.parseInt(hex, 16);
+    if (!Number.isFinite(codePoint)) {
+      return '';
+    }
+    return String.fromCharCode(codePoint);
+  });
+
+  try {
+    return decodeURIComponent(result);
+  } catch (error) {
+    return result;
+  }
+}
+
+function decodeBase64(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    if (typeof atob === 'function') {
+      return atob(value);
+    }
+  } catch (error) {
+    // fall through to Buffer handling
+  }
+
+  if (typeof Buffer !== 'undefined') {
+    try {
+      return Buffer.from(value, 'base64').toString('utf8');
+    } catch (error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function advancePastIdentifierChain(source, startIndex) {
+  let cursor = startIndex;
+  while (cursor < source.length) {
+    const character = source[cursor];
+    if (/[A-Za-z0-9_$]/.test(character)) {
+      cursor += 1;
+      continue;
+    }
+
+    if (character === '.') {
+      cursor += 1;
+      continue;
+    }
+
+    if (character === '[') {
+      cursor += 1;
+      while (cursor < source.length && /\s/.test(source[cursor])) {
+        cursor += 1;
+      }
+
+      if (cursor >= source.length) {
+        return cursor;
+      }
+
+      const bracketStart = source[cursor];
+      if (bracketStart === '"' || bracketStart === '\'') {
+        const literal = extractJsStringLiteral(source, cursor);
+        if (!literal) {
+          return cursor;
+        }
+        cursor += literal.length;
+        while (cursor < source.length && /\s/.test(source[cursor])) {
+          cursor += 1;
+        }
+        if (source[cursor] === ']') {
+          cursor += 1;
+          continue;
+        }
+        return cursor;
+      }
+
+      while (cursor < source.length && source[cursor] !== ']') {
+        cursor += 1;
+      }
+      if (source[cursor] === ']') {
+        cursor += 1;
+      }
+      continue;
+    }
+
+    if (character === ']') {
+      cursor += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return cursor;
+}
+
+function extractBalancedJson(source, startIndex) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (character === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(startIndex, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractJsStringLiteral(source, startIndex) {
+  const quote = source[startIndex];
+  let cursor = startIndex + 1;
+  let escaped = false;
+
+  while (cursor < source.length) {
+    const character = source[cursor];
+    if (escaped) {
+      escaped = false;
+    } else if (character === '\\') {
+      escaped = true;
+    } else if (character === quote) {
+      return source.slice(startIndex, cursor + 1);
+    }
+    cursor += 1;
+  }
+
+  return null;
+}
+
+function decodeJsStringLiteral(literal) {
+  if (typeof literal !== 'string' || literal.length < 2) {
+    return null;
+  }
+
+  const quote = literal[0];
+  if ((quote !== '"' && quote !== '\'') || literal[literal.length - 1] !== quote) {
+    return null;
+  }
+
+  let result = '';
+  for (let index = 1; index < literal.length - 1; index += 1) {
+    const character = literal[index];
+    if (character === '\\') {
+      index += 1;
+      if (index >= literal.length - 1) {
+        break;
+      }
+
+      const next = literal[index];
+      switch (next) {
+        case 'n':
+          result += '\n';
+          break;
+        case 'r':
+          result += '\r';
+          break;
+        case 't':
+          result += '\t';
+          break;
+        case 'b':
+          result += '\b';
+          break;
+        case 'f':
+          result += '\f';
+          break;
+        case 'v':
+          result += '\v';
+          break;
+        case '0':
+          result += '\0';
+          break;
+        case '\\':
+          result += '\\';
+          break;
+        case '\'':
+          result += '\'';
+          break;
+        case '"':
+          result += '"';
+          break;
+        case 'x': {
+          const hex = literal.slice(index + 1, index + 3);
+          if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+            result += String.fromCharCode(Number.parseInt(hex, 16));
+            index += 2;
+          } else {
+            result += next;
+          }
+          break;
+        }
+        case 'u': {
+          const hex = literal.slice(index + 1, index + 5);
+          if (/^[0-9A-Fa-f]{4}$/.test(hex)) {
+            result += String.fromCharCode(Number.parseInt(hex, 16));
+            index += 4;
+          } else {
+            result += next;
+          }
+          break;
+        }
+        default:
+          result += next;
+          break;
+      }
+    } else {
+      result += character;
+    }
+  }
+
+  return result;
+}
+
+function selectBestCaptionTrack(playerResponse) {
+  const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    return null;
+  }
+
+  const viableTracks = tracks.filter((track) => track && typeof track.baseUrl === 'string' && track.baseUrl.trim().length > 0);
+  if (viableTracks.length === 0) {
+    return null;
+  }
+
+  const scored = viableTracks
+    .map((track, index) => ({ track, index, score: scoreCaptionTrack(track) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return a.index - b.index;
+    });
+
+  return scored[0]?.track ?? null;
+}
+
+function scoreCaptionTrack(track) {
+  if (!track || typeof track !== 'object') {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  let score = 0;
+  const languageCode = typeof track.languageCode === 'string' ? track.languageCode.toLowerCase() : '';
+  const vssId = typeof track.vssId === 'string' ? track.vssId.toLowerCase() : '';
+  const trackKind = typeof track.kind === 'string' ? track.kind.toLowerCase() : '';
+
+  if (languageCode === 'en') {
+    score += 30;
+  } else if (languageCode.startsWith('en')) {
+    score += 25;
+  } else if (languageCode) {
+    score += 10;
+  }
+
+  if (!trackKind) {
+    score += 5;
+  } else if (trackKind === 'asr') {
+    score -= 5;
+  }
+
+  if (vssId.startsWith('a.')) {
+    score -= 2;
+  }
+
+  const cleanedFallback = cleanGlaspTranscript(fallbackLines.join('\n'));
+  if (!cleanedFallback) {
+    throw new Error('Transcript data not found on Glasp for this video.');
+  }
+
+  return cleanedFallback;
+}
+
+function cleanGlaspTranscript(transcript) {
+  if (typeof transcript !== 'string') {
+    return '';
+  }
+
+  const normalized = transcript.replace(/\r/g, '\n');
+  const lines = normalized
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    return '';
+  }
+
+  const strippedLines = stripLeadingGlaspMetadataLines(lines);
+  const joined = strippedLines.join('\n').trim();
+  if (!joined) {
+    return '';
+  }
+
+  const cleaned = stripResidualGlaspControlsPrefix(joined);
+  return (cleaned || joined).trim();
+}
+
+function stripLeadingGlaspMetadataLines(lines) {
+  if (!Array.isArray(lines)) {
+    return [];
+  }
+
+  const cleaned = [];
+  let skipping = true;
+  let skipNext = false;
+  let removedAny = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (skipNext) {
+      skipNext = false;
+      removedAny = true;
+      continue;
+    }
+
+    const current = lines[index];
+    const trimmed = typeof current === 'string' ? current.trim() : '';
+
+    if (!trimmed) {
+      if (skipping) {
+        removedAny = true;
+        continue;
+      }
+      cleaned.push(trimmed);
+      continue;
+    }
+
+    if (!skipping) {
+      cleaned.push(trimmed);
+      continue;
+    }
+
+    const processed = stripGlaspMetadataPrefix(trimmed, removedAny);
+    if (processed.skipNextLine) {
+      skipNext = true;
+    }
+
+    if (processed.text) {
+      cleaned.push(processed.text);
+      skipping = false;
+    } else if (!processed.removed) {
+      cleaned.push(trimmed);
+      skipping = false;
+    }
+
+    if (processed.removed) {
+      removedAny = true;
+    }
+  }
+
+  return cleaned;
+}
+
+function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
+  if (typeof line !== 'string') {
+    return { text: '', removed: false, skipNextLine: false };
+  }
+
+  const monthNames = [
+    'january',
+    'february',
+    'march',
+    'april',
+    'may',
+    'june',
+    'july',
+    'august',
+    'september',
+    'october',
+    'november',
+    'december'
+  ];
+
+  const datePattern = new RegExp(
+    `^(?:${monthNames.join('|')})\\s+\\d{1,2},\\s*\\d{4}`,
+    'i'
+  );
+
+  const tokenPatterns = [
+    /^glasp\s*reader/i,
+    /^youtube\s*transcript\s*&\s*summary/i,
+    /^&\s*summary/i,
+    /^youtube\s*video\s*player/i,
+    /^transcripts?/i,
+    /^share\s*video/i,
+    /^download\s*\.?srt/i,
+    /^copy(?:\s*transcript)?/i,
+    /^summarize\s*transcript/i,
+    /^english\s*\(auto-generated\)/i,
+    /^share\s*this\s*page/i,
+    /^get\s*(?:youtube\s*)?video\s*transcript\s*&\s*summary/i,
+    /^get\s*transcript\s*&\s*summary/i
+  ];
+
+  let working = line.trimStart();
+  let removedAny = false;
+  let skipNextLine = false;
+
+  for (let iteration = 0; iteration < 50; iteration += 1) {
+    if (!working) {
+      break;
+    }
+
+    let matched = false;
+
+    const hashtagMatch = working.match(/^#[^\s#]+/);
+    if (hashtagMatch) {
+      working = working.slice(hashtagMatch[0].length).trimStart();
+      removedAny = true;
+      matched = true;
+    }
+
+    if (!matched) {
+      const dateMatch = working.match(datePattern);
+      if (dateMatch) {
+        working = working.slice(dateMatch[0].length).trimStart();
+        removedAny = true;
+        matched = true;
+      }
+    }
+
+    if (!matched) {
+      const numericDateMatch = working.match(/^\d{1,2},\s*\d{4}/);
+      if (numericDateMatch) {
+        working = working.slice(numericDateMatch[0].length).trimStart();
+        removedAny = true;
+        matched = true;
+      }
+    }
+
+    if (!matched) {
+      for (const pattern of tokenPatterns) {
+        const tokenMatch = working.match(pattern);
+        if (tokenMatch) {
+          working = working.slice(tokenMatch[0].length).trimStart();
+          removedAny = true;
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
+      const fusedControlMatch = working.match(
+        /(?:share\s*video|download\s*\.?srt|copy(?:\s*transcript)?|summarize\s*transcript)/i
+      );
+      if (fusedControlMatch && fusedControlMatch.index !== undefined && fusedControlMatch.index < 200) {
+        const sliceIndex = fusedControlMatch.index + fusedControlMatch[0].length;
+        const remainder = working.slice(sliceIndex).trimStart();
+        if (remainder) {
+          working = remainder;
+          removedAny = true;
+          matched = true;
+        }
+      }
+    }
+
+    if (!matched) {
+      const byMatch = working.match(/^by(?:\b|\s+|(?=[A-Z#]))/i);
+      if (byMatch) {
+        if (!removedAny && !hasRemovedEarlier) {
+          // Avoid stripping genuine transcript lines that begin with "By" when no
+          // earlier metadata tokens have been removed from this or previous lines.
+          matched = false;
+        } else {
+          working = working.slice(byMatch[0].length);
+          working = working.trimStart();
+          removedAny = true;
+          matched = true;
+
+          const nameMatch = working.match(/^[A-Z][A-Za-z0-9'._-]*(?:\s+[A-Za-z0-9'._-]+)*/);
+          if (nameMatch) {
+            working = working.slice(nameMatch[0].length);
+          } else {
+            skipNextLine = true;
+          }
+
+          working = working.trimStart();
+        }
+      }
+    }
+
+    if (!matched && removedAny) {
+      const videoMatch = working.match(/^video/i);
+      if (videoMatch) {
+        const remainder = working.slice(videoMatch[0].length).trimStart();
+        if (/^download/i.test(remainder)) {
+          working = remainder;
+          matched = true;
+        }
+      }
+    }
+
+    if (!matched && /^s$/i.test(working)) {
+      working = '';
+      removedAny = true;
+      matched = true;
+    }
+
+    if (!matched && removedAny && working && (working[0] === 's' || working[0] === 'S')) {
+      working = working.slice(1).trimStart();
+      matched = true;
+    }
+
+    if (!matched) {
+      break;
+    }
+  }
+
+  return {
+    text: working.trimStart(),
+    removed: removedAny,
+    skipNextLine
+  };
+}
+
+function stripResidualGlaspControlsPrefix(text) {
+  if (typeof text !== 'string') {
+    return '';
+  }
+
+  let working = text.trimStart();
+  if (!working) {
+    return '';
+  }
+
+  const scanWindow = working.slice(0, 500);
+  const controlPattern = /(Share\s*Video|Download\s*\.?srt|Copy(?:\s*Transcript)?|Summarize\s*Transcript|English\s*\(auto-generated\))/gi;
+  let match;
+  let lastEnd = -1;
+
+  while ((match = controlPattern.exec(scanWindow)) !== null) {
+    lastEnd = match.index + match[0].length;
+  }
+
+  if (lastEnd >= 0) {
+    const remainder = working.slice(lastEnd).trimStart();
+    if (remainder) {
+      return remainder;
+    }
+  }
+
+  const residualMetadataPattern = /^(?:#[^\s#]+|Glasp\s*Reader|YouTube\s*Transcript|Transcripts?|English\s*\(auto-generated\)|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}|\d{1,2},\s*\d{4}|by\b)/i;
+  const metadataDetected = residualMetadataPattern.test(working);
+  const processed = stripGlaspMetadataPrefix(working, metadataDetected);
+  if (processed.removed && processed.text) {
+    return processed.text;
+  }
+
+  return working;
+}
+
+function buildTimedTextRequestUrl(baseUrl) {
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
+    return null;
+  }
+
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set('fmt', 'json3');
+    return url.toString();
+  } catch (error) {
+    return null;
+  }
+}
+
+async function fetchTimedTextJson(requestUrl) {
+  if (typeof requestUrl !== 'string' || !requestUrl) {
+    return null;
+  }
+
+  const response = await fetch(requestUrl, { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`Timed text request failed with status ${response.status}`);
+  }
+
+  const rawText = await response.text();
+  const sanitized = stripXssiPrefix(rawText).trim();
+  if (!sanitized) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(sanitized);
+  } catch (error) {
+    throw new Error('Unable to parse timed text response as JSON.');
+  }
+}
+
+function stripXssiPrefix(text) {
+  if (typeof text !== 'string') {
+    return '';
+  }
+  return text.replace(/^\)\]\}'\s*/u, '');
+}
+
+function parseTimedTextTrackListXml(xml) {
+  if (typeof xml !== 'string' || !xml.trim()) {
+    return [];
+  }
+
+  const decoded = xml.replace(/<!DOCTYPE[^>]*>/gi, '').replace(/<!--.*?-->/gs, '');
+  const trackRegex = /<track\s+([^>]+?)\s*\/?>(?:<\/track>)?/gi;
+  const attributeRegex = /([\w-]+)="([^"]*)"/g;
+  const tracks = [];
+
+  let trackMatch;
+  while ((trackMatch = trackRegex.exec(decoded)) !== null) {
+    const attrs = trackMatch[1];
+    const track = {};
+    let attributeMatch;
+    while ((attributeMatch = attributeRegex.exec(attrs)) !== null) {
+      const [, key, value] = attributeMatch;
+      track[key] = decodeHtmlEntity(value);
+    }
+
+    if (typeof track.lang_code === 'string' && track.lang_code.trim()) {
+      tracks.push(track);
+    }
+  }
+
+  return tracks;
+}
+
+function decodeHtmlEntity(value) {
+  return String(value)
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function buildTimedTextRequestFromTrack(videoId, track) {
+  if (!videoId || !track || typeof track !== 'object') {
+    return null;
+  }
+
+  const langCode = typeof track.lang_code === 'string' ? track.lang_code.trim() : '';
+  if (!langCode) {
+    return null;
+  }
+
+  try {
+    const url = new URL('https://www.youtube.com/api/timedtext');
+    url.searchParams.set('v', videoId);
+    url.searchParams.set('fmt', 'json3');
+    url.searchParams.set('lang', langCode);
+
+    const name = typeof track.name === 'string' ? track.name.trim() : '';
+    if (name) {
+      url.searchParams.set('name', name);
+    }
+
+    const kind = typeof track.kind === 'string' ? track.kind.trim() : '';
+    if (kind) {
+      url.searchParams.set('kind', kind);
+    } else if (typeof track.vss_id === 'string' && track.vss_id.toLowerCase().startsWith('a.')) {
+      url.searchParams.set('kind', 'asr');
+    }
+
+    if (typeof track.vss_id === 'string' && track.vss_id.trim()) {
+      url.searchParams.set('vssids', track.vss_id.trim());
+    }
+
+async function ensureTranscriptHasTimestamps(transcript, videoUrl) {
+  const cleanedTranscript = cleanGlaspTranscript(transcript);
+  if (transcriptHasTimestamps(cleanedTranscript)) {
+    return cleanedTranscript;
+  }
+}
+
+function scoreTimedTextTrack(track) {
+  if (!track || typeof track !== 'object') {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  return cleanedTranscript;
+}
+
+  let score = 0;
+
+  if (langCode === 'en') {
+    score += 40;
+  } else if (langCode.startsWith('en')) {
+    score += 35;
+  } else if (langCode) {
+    score += 10;
+  }
+
+  if (kind === 'asr' || vssId.startsWith('a.')) {
+    score -= 5;
+  }
+
+  const watchUrlCandidates = buildWatchPageUrlCandidates(videoId);
+
+  try {
+    const transcriptFromWatchPage = await fetchTranscriptFromWatchPage(videoId, watchUrlCandidates);
+    if (transcriptFromWatchPage) {
+      return transcriptFromWatchPage;
+    }
+  } catch (error) {
+    console.debug('Failed to fetch transcript from watch page', error);
+  }
+
+  try {
+    const transcriptFromTrackList = await fetchTranscriptFromTimedTextTrackList(videoId);
+    if (transcriptFromTrackList) {
+      return transcriptFromTrackList;
+    }
+  } catch (error) {
+    console.debug('Failed to fetch transcript via timed text track list', error);
+  }
+
+  const paramVariants = ['lang=en&fmt=json3', 'lang=en&kind=asr&fmt=json3', 'lang=en-US&fmt=json3', 'lang=en-US&kind=asr&fmt=json3'];
+
+  if (name.includes('auto-generated')) {
+    score -= 1;
+  }
+
+  if (track.lang_default === 'true') {
+    score += 3;
+  }
+
+  return score;
+}
+
+async function fetchTranscriptFromWatchPage(videoId, watchUrlCandidates) {
+  const candidates = Array.isArray(watchUrlCandidates) && watchUrlCandidates.length > 0
+    ? watchUrlCandidates
+    : buildWatchPageUrlCandidates(videoId);
+
+  let lastError = null;
+  let playerResponse = null;
+
+  for (const watchUrl of candidates) {
+    if (!watchUrl) {
+      continue;
+    }
+
+    let response;
+    try {
+      response = await fetch(watchUrl, { credentials: 'include', redirect: 'follow' });
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Watch page request failed.');
+      continue;
+    }
+
+    if (!response.ok) {
+      lastError = new Error(`Watch page request failed with status ${response.status}`);
+      continue;
+    }
+
+    const html = await response.text();
+    if (isConsentInterstitialHtml(html)) {
+      lastError = new Error('Watch page request returned a consent interstitial.');
+      continue;
+    }
+
+    const parsed = extractPlayerResponseFromWatchHtml(html);
+    if (!parsed) {
+      lastError = new Error('Unable to locate player response in watch page HTML.');
+      continue;
+    }
+
+    playerResponse = parsed;
+    break;
+  }
+
+  if (!playerResponse) {
+    try {
+      playerResponse = await fetchPlayerResponseFromWatchTab(videoId, candidates);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('Unable to load watch page for transcript extraction.');
     }
