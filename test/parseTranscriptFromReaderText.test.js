@@ -68,6 +68,7 @@ if (typeof global.chrome === 'undefined') {
 
 const {
   parseTranscriptFromReaderText,
+  cleanGlaspTranscript,
   stripLeadingGlaspMetadataLines,
   stripResidualGlaspControlsPrefix
 } = require('../background.js');
@@ -198,6 +199,26 @@ test('stripResidualGlaspControlsPrefix removes trailing Glasp controls before di
   const cleaned = stripResidualGlaspControlsPrefix(input);
 
   assert.strictEqual(cleaned, 'First spoken line of the clip.');
+});
+
+test('cleanGlaspTranscript removes glued metadata block before transcript', () => {
+  const input = '#philosophaireSeptember 18, 2025byPhilosophaire#philosophairesShare VideoDownload .srtCopyFirst line';
+  assert.strictEqual(cleanGlaspTranscript(input), 'First line');
+});
+
+test('cleanGlaspTranscript trims metadata spread across multiple lines', () => {
+  const input = [
+    '#philosophaire',
+    'September 18, 2025',
+    'by Philosophaire',
+    'Share Video',
+    'Download .srt',
+    'Copy Transcript',
+    'First line',
+    'Second line'
+  ].join('\n');
+
+  assert.strictEqual(cleanGlaspTranscript(input), 'First line\nSecond line');
 });
 
 test('stripResidualGlaspControlsPrefix leaves ordinary dialogue untouched', () => {
