@@ -125,8 +125,11 @@ if (chromeApiAvailable && typeof chrome.tabs === 'object' && chrome.tabs !== nul
     }
   })();
 }
-
 async function fetchTranscriptFromGlasp(videoUrl) {
+  if (!chromeApiAvailable || !chrome?.tabs?.create) {
+    throw new Error('Glasp transcript fetching requires the Chrome extension environment.');
+  }
+
   const targetUrl = `${GLASP_READER_BASE_URL}${encodeURIComponent(videoUrl)}`;
   const readerTab = await chrome.tabs.create({ url: targetUrl, active: false });
   if (!readerTab?.id) {
@@ -167,25 +170,13 @@ async function fetchTranscriptFromGlasp(videoUrl) {
   }
 }
 
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    parseTranscriptFromReaderText,
-    cleanGlaspTranscript,
-    stripLeadingGlaspMetadataLines,
-    stripResidualGlaspControlsPrefix,
-    extractPlayerResponseFromWatchHtml,
-    extractJsonObjectFromAssignment,
-    isConsentInterstitialHtml,
-    buildWatchPageUrl,
-    fetchTranscriptFromYouTube,
-    parseTimedTextTrackListXml,
-    buildTimedTextRequestFromTrack
-  };
-}
-
 async function openChatGPTTab(prompt, preferredHost, autoSend) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
     throw new Error('Invalid prompt supplied.');
+  }
+
+  if (!chromeApiAvailable || !chrome?.tabs?.create) {
+    throw new Error('ChatGPT tab creation requires the Chrome extension environment.');
   }
 
   const host = normalizeChatHost(preferredHost);
@@ -320,7 +311,6 @@ async function getTabInnerText(tabId) {
     throw error instanceof Error ? error : new Error('Failed to read transcript from Glasp.');
   }
 }
-
 const GLASP_MARKETING_LINES = [
   'Share This Page',
   'Get YouTube Video Transcript',
@@ -440,153 +430,6 @@ function stripLeadingGlaspMetadataLines(lines) {
     return [];
   }
 
-  const monthPattern =
-    /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i;
-
-  const shouldDropLine = (line, metadataSeen) => {
-    if (typeof line !== 'string') {
-      return true;
-    }
-
-    const normalized = line.replace(/\u00a0/g, ' ').trim();
-    if (!normalized) {
-      return true;
-    }
-
-    if (/^#[\p{L}\p{N}_-]+/u.test(normalized)) {
-      return true;
-    }
-
-    if (monthPattern.test(normalized)) {
-      return true;
-    }
-
-    if (/^(?:\d{1,2}[\/-]){2}\d{2,4}$/.test(normalized)) {
-      return true;
-    }
-
-    if (/^\d{4}$/.test(normalized)) {
-      return true;
-    }
-
-    if (/^by\s*[:|]*$/i.test(normalized)) {
-      return true;
-    }
-
-    if (/^by\b/i.test(normalized)) {
-      const remainder = normalized.slice(2).trim();
-      if (!remainder) {
-        return true;
-      }
-
-      const firstWord = remainder.split(/\s+/)[0];
-      if (/^@[\w.-]+/.test(firstWord)) {
-        return true;
-      }
-
-      if (metadataSeen && (/^[A-Z#]/.test(firstWord) || /^[a-z]/.test(firstWord) === false)) {
-        return true;
-      }
-    }
-
-    if ((normalized.includes('#') || normalized.includes('@') || normalized.includes('•')) && metadataSeen) {
-      return true;
-    }
-
-    if (metadataSeen && /^[A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*)*$/.test(normalized)) {
-      return true;
-    }
-
-    return false;
-  };
-
-  let dropCount = 0;
-  let metadataSeen = false;
-  let dropNextAuthorLine = false;
-
-  for (const line of lines) {
-    if (dropNextAuthorLine) {
-      dropCount += 1;
-      metadataSeen = true;
-      dropNextAuthorLine = false;
-      continue;
-    }
-
-    if (!shouldDropLine(line, metadataSeen)) {
-      break;
-    }
-
-    const normalized = typeof line === 'string' ? line.replace(/\u00a0/g, ' ').trim() : '';
-    dropCount += 1;
-    metadataSeen = true;
-    if (/^by\s*[:|]*$/i.test(normalized)) {
-      dropNextAuthorLine = true;
-    }
-  }
-
-  return lines.slice(dropCount);
-}
-
-function parseTranscriptFromReaderText(pageText) {
-  if (typeof pageText !== 'string' || pageText.trim().length === 0) {
-    throw new Error('Empty response received from Glasp.');
-  }
-
-  if (/Attention Required! \| Cloudflare/i.test(pageText)) {
-    throw new Error('Glasp is requesting additional verification. Open glasp.co in your browser and retry.');
-  }
-
-  if (/Please\s+(?:sign\s+in|log\s+in)/i.test(pageText)) {
-    throw new Error('Please sign in to Glasp in this browser to access transcripts.');
-  }
-
-  const sanitized = pageText.replace(/\r/g, '\n').replace(/\u00a0/g, ' ');
-  const transcriptCandidate = extractTranscriptSection(sanitized);
-  const transcriptSection = truncateMarketingContent(transcriptCandidate).trim();
-
-  if (!transcriptSection) {
-    throw new Error('Transcript data not found on Glasp for this video.');
-  }
-
-  const segments = extractSegmentsFromPlainText(transcriptSection);
-  if (segments.length > 0) {
-    return segments.join('\n');
-  }
-
-  const headerPattern = /^(?:Summarize\s+)?Transcript(?:\s*English\s*\(auto-generated\))?$/i;
-
-  const fallbackLines = transcriptSection
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(
-      (line) =>
-        line.length > 0 &&
-        !isMarketingFooterLine(line) &&
-        !headerPattern.test(line) &&
-        !/^English\s*\(auto-generated\)$/i.test(line)
-    );
-
-  const strippedFallbackLines = stripLeadingGlaspMetadataLines(fallbackLines);
-  let fallbackTranscript = strippedFallbackLines.join('\n').trim();
-
-  if (fallbackTranscript) {
-    const cleaned = stripResidualGlaspControlsPrefix(fallbackTranscript);
-    if (cleaned) {
-      fallbackTranscript = cleaned;
-    }
-  }
-  if (!fallbackTranscript) {
-    throw new Error('Transcript data not found on Glasp for this video.');
-  }
-
-  return fallbackTranscript;
-}
-
-function stripLeadingGlaspMetadataLines(lines) {
-  if (!Array.isArray(lines)) {
-    return [];
-  }
-
   const cleaned = [];
   let skipping = true;
   let skipNext = false;
@@ -745,8 +588,6 @@ function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
       const byMatch = working.match(/^by(?:\b|\s+|(?=[A-Z#]))/i);
       if (byMatch) {
         if (!removedAny && !hasRemovedEarlier) {
-          // Avoid stripping genuine transcript lines that begin with "By" when no
-          // earlier metadata tokens have been removed from this or previous lines.
           matched = false;
         } else {
           working = working.slice(byMatch[0].length);
@@ -835,7 +676,6 @@ function stripResidualGlaspControlsPrefix(text) {
 
   return working;
 }
-
 function truncateMarketingContent(text) {
   if (!text) {
     return text;
@@ -933,9 +773,310 @@ function extractSegmentsFromPlainText(text) {
   return segments;
 }
 
+function formatTranscriptSegment(timestamp, text) {
+  return `[${normalizeTimestamp(timestamp)}] ${text}`.trim();
+}
+
+function normalizeTimestamp(value) {
+  if (!value) {
+    return '00:00';
+  }
+  const parts = value.split(':').map((part) => part.padStart(2, '0'));
+  if (parts.length === 3 && parts[0] === '00') {
+    return `${parts[1]}:${parts[2]}`;
+  }
+  if (parts.length === 1) {
+    return `00:${parts[0]}`;
+  }
+  return parts.slice(-2).join(':');
+}
+
+function parseTranscriptFromReaderText(pageText) {
+  if (typeof pageText !== 'string' || pageText.trim().length === 0) {
+    throw new Error('Empty response received from Glasp.');
+  }
+
+  if (/Attention Required! \| Cloudflare/i.test(pageText)) {
+    throw new Error('Glasp is requesting additional verification. Open glasp.co in your browser and retry.');
+  }
+
+  if (/Please\s+(?:sign\s+in|log\s+in)/i.test(pageText)) {
+    throw new Error('Please sign in to Glasp in this browser to access transcripts.');
+  }
+
+  const sanitized = pageText.replace(/\r/g, '\n').replace(/\u00a0/g, ' ');
+  const transcriptCandidate = extractTranscriptSection(sanitized);
+  const transcriptSection = truncateMarketingContent(transcriptCandidate).trim();
+
+  if (!transcriptSection) {
+    throw new Error('Transcript data not found on Glasp for this video.');
+  }
+
+  const segments = extractSegmentsFromPlainText(transcriptSection);
+  if (segments.length > 0) {
+    return segments.join('\n');
+  }
+
+  const headerPattern = /^(?:Summarize\s+)?Transcript(?:\s*English\s*\(auto-generated\))?$/i;
+
+  const fallbackLines = transcriptSection
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !isMarketingFooterLine(line) &&
+        !headerPattern.test(line) &&
+        !/^English\s*\(auto-generated\)$/i.test(line)
+    );
+
+  const strippedFallbackLines = stripLeadingGlaspMetadataLines(fallbackLines);
+  let fallbackTranscript = strippedFallbackLines.join('\n').trim();
+
+  if (fallbackTranscript) {
+    const cleaned = stripResidualGlaspControlsPrefix(fallbackTranscript);
+    if (cleaned) {
+      fallbackTranscript = cleaned;
+    }
+  }
+  if (!fallbackTranscript) {
+    throw new Error('Transcript data not found on Glasp for this video.');
+  }
+
+  return fallbackTranscript;
+}
+
+function cleanGlaspTranscript(transcript) {
+  if (typeof transcript !== 'string') {
+    return '';
+  }
+
+  const normalized = transcript.replace(/\r/g, '\n');
+  const lines = normalized
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    return '';
+  }
+
+  const strippedLines = stripLeadingGlaspMetadataLines(lines);
+  const joined = strippedLines.join('\n').trim();
+  if (!joined) {
+    return '';
+  }
+
+  const cleaned = stripResidualGlaspControlsPrefix(joined);
+  return (cleaned || joined).trim();
+}
+
+function isChatUrl(url) {
+  if (typeof url !== 'string') {
+    return false;
+  }
+  try {
+    const parsed = new URL(url);
+    return /chatgpt\.com$|chat\.openai\.com$/.test(parsed.hostname);
+  } catch (error) {
+    return false;
+  }
+}
+
+function normalizeChatHost(preferredHost) {
+  if (typeof preferredHost === 'string') {
+    const host = preferredHost.trim().toLowerCase();
+    if (host === 'chatgpt.com' || host === 'chat.openai.com') {
+      return host;
+    }
+  }
+  return 'chatgpt.com';
+}
+
+async function ensurePendingPromptsLoaded() {
+  if (pendingLoaded) {
+    return;
+  }
+
+  if (pendingLoadingPromise) {
+    return pendingLoadingPromise;
+  }
+
+  pendingLoadingPromise = (async () => {
+    try {
+      if (!chromeApiAvailable || !chrome?.storage?.local) {
+        pendingPrompts = new Map();
+        pendingLoaded = true;
+        return;
+      }
+
+      const stored = await chrome.storage.local.get(PENDING_STORAGE_KEY);
+      const rawMap = stored?.[PENDING_STORAGE_KEY];
+      if (rawMap && typeof rawMap === 'object') {
+        pendingPrompts = new Map(
+          Object.entries(rawMap).map(([key, value]) => [Number.parseInt(key, 10), value])
+        );
+      } else {
+        pendingPrompts = new Map();
+      }
+      pendingLoaded = true;
+    } finally {
+      pendingLoadingPromise = null;
+    }
+  })();
+
+  return pendingLoadingPromise;
+}
+
+async function persistPendingPrompts() {
+  if (!chromeApiAvailable || !chrome?.storage?.local) {
+    return;
+  }
+
+  const serializable = {};
+  for (const [tabId, value] of pendingPrompts.entries()) {
+    serializable[tabId] = value;
+  }
+
+  await chrome.storage.local.set({ [PENDING_STORAGE_KEY]: serializable });
+}
+
+async function setPendingPrompt(tabId, data) {
+  await ensurePendingPromptsLoaded();
+  pendingPrompts.set(tabId, data);
+  await persistPendingPrompts();
+}
+
+async function removePendingPrompt(tabId) {
+  await ensurePendingPromptsLoaded();
+  if (pendingPrompts.delete(tabId)) {
+    await persistPendingPrompts();
+  }
+}
+
+function injectPromptAndSend(prompt, autoSend, hasInjected) {
+  if (typeof prompt !== 'string' || !prompt.trim()) {
+    return { status: 'permanent-failure', reason: 'Invalid prompt.' };
+  }
+
+  const composer = findChatComposer();
+  if (!composer) {
+    return { status: 'retry', reason: 'Composer not yet available.' };
+  }
+
+  const applied = applyPromptToComposer(composer, prompt);
+  if (!applied) {
+    return { status: 'retry', reason: 'Failed to set prompt text.' };
+  }
+
+  if (!autoSend) {
+    return { status: 'manual-complete', hasInjected: true };
+  }
+
+  const sendButton = findSendButtonNearComposer(composer);
+  if (!sendButton) {
+    return { status: 'retry', reason: 'Send button not found.', hasInjected: true };
+  }
+
+  if (!isSendButtonEnabled(sendButton)) {
+    return { status: 'retry', reason: 'Send button disabled.', hasInjected: true };
+  }
+
+  sendButton.click();
+  return { status: 'success', hasInjected: true };
+}
+
+function findChatComposer() {
+  const selectors = [
+    'textarea[data-id="root"]',
+    'textarea',
+    'div[contenteditable="true"]'
+  ];
+  for (const selector of selectors) {
+    const element = document.querySelector(selector);
+    if (element) {
+      return element;
+    }
+  }
+  return null;
+}
+
+function applyPromptToComposer(element, prompt) {
+  try {
+    if (element.value !== undefined) {
+      element.value = prompt;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    if (element.isContentEditable) {
+      element.innerText = prompt;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    }
+  } catch (error) {
+    console.error('Failed to apply prompt to composer', error);
+  }
+  return false;
+}
+
+function findSendButtonNearComposer(composer) {
+  const root = composer.closest('[data-testid^="conversation-turn-"]') || composer.parentElement;
+  if (root) {
+    const button = root.querySelector('button[type="submit"], button[aria-label*="Send" i], button[data-testid*="send" i]');
+    if (button) {
+      return button;
+    }
+  }
+  const fallback = document.querySelector('button[type="submit"], button[aria-label*="Send" i], button[data-testid*="send" i]');
+  return fallback || null;
+}
+
+function isSendButtonEnabled(button) {
+  if (!(button instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (button.disabled) {
+    return false;
+  }
+
+  const ariaDisabled = button.getAttribute('aria-disabled');
+  if (ariaDisabled && ariaDisabled.toLowerCase() === 'true') {
+    return false;
+  }
+
+  const dataDisabled = button.getAttribute('data-disabled') || button.dataset?.disabled;
+  if (typeof dataDisabled === 'string' && dataDisabled.toLowerCase() === 'true') {
+    return false;
+  }
+
+  try {
+    const style = window.getComputedStyle(button);
+    if (style.pointerEvents === 'none') {
+      return false;
+    }
+    if (style.opacity && Number.parseFloat(style.opacity) < 0.2) {
+      return false;
+    }
+  } catch (error) {
+    // Ignore style lookup errors.
+  }
+
+  return true;
+}
+function transcriptHasTimestamps(transcript) {
+  if (typeof transcript !== 'string') {
+    return false;
+  }
+  return /\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]/.test(transcript);
+}
+
 async function ensureTranscriptHasTimestamps(transcript, videoUrl) {
-  if (transcriptHasTimestamps(transcript)) {
-    return transcript;
+  const cleanedTranscript = cleanGlaspTranscript(transcript);
+  if (transcriptHasTimestamps(cleanedTranscript)) {
+    return cleanedTranscript;
   }
 
   try {
@@ -947,14 +1088,7 @@ async function ensureTranscriptHasTimestamps(transcript, videoUrl) {
     console.warn('Timed transcript fallback failed', error);
   }
 
-  return transcript;
-}
-
-function transcriptHasTimestamps(transcript) {
-  if (typeof transcript !== 'string') {
-    return false;
-  }
-  return /\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]/.test(transcript);
+  return cleanedTranscript;
 }
 
 async function fetchTranscriptFromYouTube(videoUrl) {
@@ -981,6 +1115,15 @@ async function fetchTranscriptFromYouTube(videoUrl) {
     console.debug('Failed to fetch transcript via timed text track list', error);
   }
 
+  try {
+    const transcriptFromTab = await fetchTranscriptFromWatchTab(videoId);
+    if (transcriptFromTab) {
+      return transcriptFromTab;
+    }
+  } catch (error) {
+    console.debug('Timed transcript tab fallback failed', error);
+  }
+
   const paramVariants = ['lang=en&fmt=json3', 'lang=en&kind=asr&fmt=json3', 'lang=en-US&fmt=json3', 'lang=en-US&kind=asr&fmt=json3'];
 
   for (const params of paramVariants) {
@@ -991,10 +1134,20 @@ async function fetchTranscriptFromYouTube(videoUrl) {
         continue;
       }
 
-      const data = await response.json();
-      const formatted = parseTimedTextJson(data);
-      if (formatted) {
-        return formatted;
+      const payload = await response.text();
+      const sanitized = stripXssiPrefix(payload).trim();
+      if (!sanitized) {
+        continue;
+      }
+
+      try {
+        const data = JSON.parse(sanitized);
+        const formatted = parseTimedTextJson(data);
+        if (formatted) {
+          return formatted;
+        }
+      } catch (error) {
+        console.debug('Timed transcript fallback parse failed for params', params, error);
       }
     } catch (error) {
       console.debug('Failed to fetch YouTube timed transcript with params', params, error);
@@ -1087,6 +1240,89 @@ async function fetchTranscriptFromWatchPage(videoId) {
   return formatted;
 }
 
+async function fetchTranscriptFromWatchTab(videoId) {
+  if (!chromeApiAvailable || !chrome?.tabs?.create || !chrome?.scripting?.executeScript) {
+    throw new Error('Watch tab fallback is unavailable outside the extension environment.');
+  }
+
+  const watchUrl = buildWatchPageUrl(videoId);
+  if (!watchUrl) {
+    throw new Error('Unable to determine watch URL for transcript fallback.');
+  }
+
+  const tab = await chrome.tabs.create({ url: watchUrl, active: false });
+  if (!tab?.id) {
+    throw new Error('Unable to open watch tab for transcript fallback.');
+  }
+
+  const tabId = tab.id;
+  try {
+    await waitForTabComplete(tabId, WATCH_PAGE_LOAD_TIMEOUT_MS, 'watch page');
+    const evaluation = await evaluatePlayerResponseInTab(tabId);
+    if (!evaluation || typeof evaluation.playerResponseJson !== 'string') {
+      throw new Error('Watch tab did not yield a player response.');
+    }
+
+    const playerResponse = JSON.parse(evaluation.playerResponseJson);
+    const captionTrack = selectBestCaptionTrack(playerResponse);
+    if (!captionTrack || typeof captionTrack.baseUrl !== 'string') {
+      throw new Error('No caption track found in watch tab player response.');
+    }
+
+    const requestUrl = buildTimedTextRequestUrl(captionTrack.baseUrl);
+    if (!requestUrl) {
+      throw new Error('Unable to normalize caption track URL from watch tab.');
+    }
+
+    const timedTextData = await fetchTimedTextJson(requestUrl);
+    if (!timedTextData) {
+      throw new Error('Timed text JSON response from watch tab request was empty.');
+    }
+
+    const formatted = parseTimedTextJson(timedTextData);
+    if (!formatted) {
+      throw new Error('Unable to format timed text transcript from watch tab.');
+    }
+
+    return formatted;
+  } finally {
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch (error) {
+      console.debug('Failed to close watch tab fallback', error);
+    }
+  }
+}
+
+async function evaluatePlayerResponseInTab(tabId) {
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      const candidate =
+        window.ytInitialPlayerResponse ||
+        globalThis.ytInitialPlayerResponse ||
+        (typeof window.ytplayer === 'object' && window.ytplayer?.config?.args?.player_response);
+
+      if (candidate && typeof candidate === 'object') {
+        try {
+          return { playerResponseJson: JSON.stringify(candidate) };
+        } catch (error) {
+          return null;
+        }
+      }
+
+      if (typeof candidate === 'string') {
+        return { playerResponseJson: candidate };
+      }
+
+      return null;
+    }
+  });
+
+  return result || null;
+}
+
 async function fetchTranscriptFromTimedTextTrackList(videoId) {
   if (!videoId) {
     return '';
@@ -1162,6 +1398,27 @@ function buildWatchPageUrl(videoId, queryOverrides = null, baseUrl = 'https://ww
   }
 }
 
+function extractVideoIdFromUrl(videoUrl) {
+  try {
+    const parsed = new URL(videoUrl);
+    if (parsed.hostname === 'youtu.be') {
+      return parsed.pathname.slice(1);
+    }
+    if (parsed.searchParams.has('v')) {
+      return parsed.searchParams.get('v');
+    }
+    const match = parsed.pathname.match(/\/embed\/([\w-]{11})/);
+    if (match) {
+      return match[1];
+    }
+  } catch (error) {
+    // ignore
+  }
+  if (/^[\w-]{11}$/.test(videoUrl)) {
+    return videoUrl;
+  }
+  return null;
+}
 function extractPlayerResponseFromWatchHtml(html) {
   if (typeof html !== 'string' || !html) {
     return null;
@@ -1181,15 +1438,6 @@ function extractPlayerResponseFromWatchHtml(html) {
     const parsed = extractJsonObjectFromAssignment(html, marker);
     if (parsed) {
       return parsed;
-    }
-  }
-
-  const inlineMatch = html.match(/"playerResponse":\s*(\{.*?\})\s*,\s*"responseContext"/s);
-  if (inlineMatch) {
-    try {
-      return JSON.parse(inlineMatch[1]);
-    } catch (error) {
-      return null;
     }
   }
 
@@ -1238,12 +1486,12 @@ function extractJsonObjectFromAssignment(source, marker) {
       if (/\s/.test(current) || current === '=') {
         cursor += 1;
         continue;
-    }
+      }
 
-    if (current === '(' || current === '!' || current === ')') {
-      cursor += 1;
-      continue;
-    }
+      if (current === '(' || current === '!' || current === ')') {
+        cursor += 1;
+        continue;
+      }
 
       if (current === '{') {
         const jsonText = extractBalancedJson(source, cursor);
@@ -1444,67 +1692,15 @@ function decodeJsonWrapper(wrapper, value) {
       case 'decodeURI':
         return decodeURI(value);
       case 'unescape':
-        return decodeUsingUnescape(value);
+        return unescape(value);
       case 'atob':
-        return decodeBase64(value);
+        return typeof atob === 'function' ? atob(value) : Buffer.from(value, 'base64').toString('utf8');
       default:
         return null;
     }
   } catch (error) {
     return null;
   }
-}
-
-function decodeUsingUnescape(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  let result = value.replace(/%u([0-9A-Fa-f]{4})/g, (_, hex) => {
-    const codePoint = Number.parseInt(hex, 16);
-    if (!Number.isFinite(codePoint)) {
-      return '';
-    }
-    return String.fromCharCode(codePoint);
-  });
-
-  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => {
-    const codePoint = Number.parseInt(hex, 16);
-    if (!Number.isFinite(codePoint)) {
-      return '';
-    }
-    return String.fromCharCode(codePoint);
-  });
-
-  try {
-    return decodeURIComponent(result);
-  } catch (error) {
-    return result;
-  }
-}
-
-function decodeBase64(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  try {
-    if (typeof atob === 'function') {
-      return atob(value);
-    }
-  } catch (error) {
-    // fall through to Buffer handling
-  }
-
-  if (typeof Buffer !== 'undefined') {
-    try {
-      return Buffer.from(value, 'base64').toString('utf8');
-    } catch (error) {
-      return null;
-    }
-  }
-
-  return null;
 }
 
 function advancePastIdentifierChain(source, startIndex) {
@@ -1609,19 +1805,26 @@ function extractBalancedJson(source, startIndex) {
 
 function extractJsStringLiteral(source, startIndex) {
   const quote = source[startIndex];
-  let cursor = startIndex + 1;
-  let escaped = false;
+  if (quote !== '"' && quote !== '\'') {
+    return null;
+  }
 
-  while (cursor < source.length) {
-    const character = source[cursor];
+  let escaped = false;
+  for (let index = startIndex + 1; index < source.length; index += 1) {
+    const character = source[index];
     if (escaped) {
       escaped = false;
-    } else if (character === '\\') {
-      escaped = true;
-    } else if (character === quote) {
-      return source.slice(startIndex, cursor + 1);
+      continue;
     }
-    cursor += 1;
+
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (character === quote) {
+      return source.slice(startIndex, index + 1);
+    }
   }
 
   return null;
@@ -1641,12 +1844,11 @@ function decodeJsStringLiteral(literal) {
   for (let index = 1; index < literal.length - 1; index += 1) {
     const character = literal[index];
     if (character === '\\') {
-      index += 1;
-      if (index >= literal.length - 1) {
-        break;
+      const next = literal[index + 1];
+      if (!next) {
+        return null;
       }
-
-      const next = literal[index];
+      index += 1;
       switch (next) {
         case 'n':
           result += '\n';
@@ -1709,372 +1911,6 @@ function decodeJsStringLiteral(literal) {
 
   return result;
 }
-
-function selectBestCaptionTrack(playerResponse) {
-  const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!Array.isArray(tracks) || tracks.length === 0) {
-    return null;
-  }
-
-  const viableTracks = tracks.filter((track) => track && typeof track.baseUrl === 'string' && track.baseUrl.trim().length > 0);
-  if (viableTracks.length === 0) {
-    return null;
-  }
-
-  const scored = viableTracks
-    .map((track, index) => ({ track, index, score: scoreCaptionTrack(track) }))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return a.index - b.index;
-    });
-
-  return scored[0]?.track ?? null;
-}
-
-function scoreCaptionTrack(track) {
-  if (!track || typeof track !== 'object') {
-    return Number.NEGATIVE_INFINITY;
-  }
-
-  let score = 0;
-  const languageCode = typeof track.languageCode === 'string' ? track.languageCode.toLowerCase() : '';
-  const vssId = typeof track.vssId === 'string' ? track.vssId.toLowerCase() : '';
-  const trackKind = typeof track.kind === 'string' ? track.kind.toLowerCase() : '';
-
-  if (languageCode === 'en') {
-    score += 30;
-  } else if (languageCode.startsWith('en')) {
-    score += 25;
-  } else if (languageCode) {
-    score += 10;
-  }
-
-  if (!trackKind) {
-    score += 5;
-  } else if (trackKind === 'asr') {
-    score -= 5;
-  }
-
-  if (vssId.startsWith('a.')) {
-    score -= 2;
-  }
-
-  const strippedFallbackLines = stripLeadingGlaspMetadataLines(fallbackLines);
-  let fallbackTranscript = strippedFallbackLines.join('\n').trim();
-
-  if (fallbackTranscript) {
-    const cleaned = stripResidualGlaspControlsPrefix(fallbackTranscript);
-    if (cleaned) {
-      fallbackTranscript = cleaned;
-    }
-  }
-  if (!fallbackTranscript) {
-    throw new Error('Transcript data not found on Glasp for this video.');
-  }
-
-  return score;
-}
-
-function stripLeadingGlaspMetadataLines(lines) {
-  if (!Array.isArray(lines)) {
-    return [];
-  }
-
-  const cleaned = [];
-  let skipping = true;
-  let skipNext = false;
-  let removedAny = false;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    if (skipNext) {
-      skipNext = false;
-      removedAny = true;
-      continue;
-    }
-
-    const current = lines[index];
-    const trimmed = typeof current === 'string' ? current.trim() : '';
-
-    if (!trimmed) {
-      if (skipping) {
-        removedAny = true;
-        continue;
-      }
-      cleaned.push(trimmed);
-      continue;
-    }
-
-    if (!skipping) {
-      cleaned.push(trimmed);
-      continue;
-    }
-
-    const processed = stripGlaspMetadataPrefix(trimmed, removedAny);
-    if (processed.skipNextLine) {
-      skipNext = true;
-    }
-
-    if (processed.text) {
-      cleaned.push(processed.text);
-      skipping = false;
-    } else if (!processed.removed) {
-      cleaned.push(trimmed);
-      skipping = false;
-    }
-
-    if (processed.removed) {
-      removedAny = true;
-    }
-  }
-
-  return cleaned;
-}
-
-function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
-  if (typeof line !== 'string') {
-    return { text: '', removed: false, skipNextLine: false };
-  }
-
-  const monthNames = [
-    'january',
-    'february',
-    'march',
-    'april',
-    'may',
-    'june',
-    'july',
-    'august',
-    'september',
-    'october',
-    'november',
-    'december'
-  ];
-
-  const datePattern = new RegExp(
-    `^(?:${monthNames.join('|')})\\s+\\d{1,2},\\s*\\d{4}`,
-    'i'
-  );
-
-  const tokenPatterns = [
-    /^glasp\s*reader/i,
-    /^youtube\s*transcript\s*&\s*summary/i,
-    /^&\s*summary/i,
-    /^youtube\s*video\s*player/i,
-    /^transcripts?/i,
-    /^share\s*video/i,
-    /^download\s*\.?srt/i,
-    /^copy(?:\s*transcript)?/i,
-    /^summarize\s*transcript/i,
-    /^english\s*\(auto-generated\)/i,
-    /^share\s*this\s*page/i,
-    /^get\s*(?:youtube\s*)?video\s*transcript\s*&\s*summary/i,
-    /^get\s*transcript\s*&\s*summary/i
-  ];
-
-  let working = line.trimStart();
-  let removedAny = false;
-  let skipNextLine = false;
-
-  for (let iteration = 0; iteration < 50; iteration += 1) {
-    if (!working) {
-      break;
-    }
-
-    let matched = false;
-
-    const hashtagMatch = working.match(/^#[^\s#]+/);
-    if (hashtagMatch) {
-      working = working.slice(hashtagMatch[0].length).trimStart();
-      removedAny = true;
-      matched = true;
-    }
-
-    if (!matched) {
-      const dateMatch = working.match(datePattern);
-      if (dateMatch) {
-        working = working.slice(dateMatch[0].length).trimStart();
-        removedAny = true;
-        matched = true;
-      }
-    }
-
-    if (!matched) {
-      const numericDateMatch = working.match(/^\d{1,2},\s*\d{4}/);
-      if (numericDateMatch) {
-        working = working.slice(numericDateMatch[0].length).trimStart();
-        removedAny = true;
-        matched = true;
-      }
-    }
-
-    if (!matched) {
-      for (const pattern of tokenPatterns) {
-        const tokenMatch = working.match(pattern);
-        if (tokenMatch) {
-          working = working.slice(tokenMatch[0].length).trimStart();
-          removedAny = true;
-          matched = true;
-          break;
-        }
-      }
-    }
-
-    if (!matched) {
-      const fusedControlMatch = working.match(
-        /(?:share\s*video|download\s*\.?srt|copy(?:\s*transcript)?|summarize\s*transcript)/i
-      );
-      if (fusedControlMatch && fusedControlMatch.index !== undefined && fusedControlMatch.index < 200) {
-        const sliceIndex = fusedControlMatch.index + fusedControlMatch[0].length;
-        const remainder = working.slice(sliceIndex).trimStart();
-        if (remainder) {
-          working = remainder;
-          removedAny = true;
-          matched = true;
-        }
-      }
-    }
-
-    if (!matched) {
-      const byMatch = working.match(/^by(?:\b|\s+|(?=[A-Z#]))/i);
-      if (byMatch) {
-        if (!removedAny && !hasRemovedEarlier) {
-          // Avoid stripping genuine transcript lines that begin with "By" when no
-          // earlier metadata tokens have been removed from this or previous lines.
-          matched = false;
-        } else {
-          working = working.slice(byMatch[0].length);
-          working = working.trimStart();
-          removedAny = true;
-          matched = true;
-
-          const nameMatch = working.match(/^[A-Z][A-Za-z0-9'._-]*(?:\s+[A-Za-z0-9'._-]+)*/);
-          if (nameMatch) {
-            working = working.slice(nameMatch[0].length);
-          } else {
-            skipNextLine = true;
-          }
-
-          working = working.trimStart();
-        }
-      }
-    }
-
-    if (!matched && removedAny) {
-      const videoMatch = working.match(/^video/i);
-      if (videoMatch) {
-        const remainder = working.slice(videoMatch[0].length).trimStart();
-        if (/^download/i.test(remainder)) {
-          working = remainder;
-          matched = true;
-        }
-      }
-    }
-
-    if (!matched && /^s$/i.test(working)) {
-      working = '';
-      removedAny = true;
-      matched = true;
-    }
-
-    if (!matched && removedAny && working && (working[0] === 's' || working[0] === 'S')) {
-      working = working.slice(1).trimStart();
-      matched = true;
-    }
-
-    if (!matched) {
-      break;
-    }
-  }
-
-  return {
-    text: working.trimStart(),
-    removed: removedAny,
-    skipNextLine
-  };
-}
-
-function stripResidualGlaspControlsPrefix(text) {
-  if (typeof text !== 'string') {
-    return '';
-  }
-
-  let working = text.trimStart();
-  if (!working) {
-    return '';
-  }
-
-  const scanWindow = working.slice(0, 500);
-  const controlPattern = /(Share\s*Video|Download\s*\.?srt|Copy(?:\s*Transcript)?|Summarize\s*Transcript|English\s*\(auto-generated\))/gi;
-  let match;
-  let lastEnd = -1;
-
-  while ((match = controlPattern.exec(scanWindow)) !== null) {
-    lastEnd = match.index + match[0].length;
-  }
-
-  if (lastEnd >= 0) {
-    const remainder = working.slice(lastEnd).trimStart();
-    if (remainder) {
-      return remainder;
-    }
-  }
-
-  const residualMetadataPattern = /^(?:#[^\s#]+|Glasp\s*Reader|YouTube\s*Transcript|Transcripts?|English\s*\(auto-generated\)|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}|\d{1,2},\s*\d{4}|by\b)/i;
-  const metadataDetected = residualMetadataPattern.test(working);
-  const processed = stripGlaspMetadataPrefix(working, metadataDetected);
-  if (processed.removed && processed.text) {
-    return processed.text;
-  }
-
-  return working;
-}
-
-function truncateMarketingContent(text) {
-  if (!text) {
-    return text;
-  }
-
-  try {
-    const url = new URL(baseUrl);
-    url.searchParams.set('fmt', 'json3');
-    return url.toString();
-  } catch (error) {
-    return null;
-  }
-}
-
-async function fetchTimedTextJson(requestUrl) {
-  if (typeof requestUrl !== 'string' || !requestUrl) {
-    return null;
-  }
-
-  const response = await fetch(requestUrl, { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(`Timed text request failed with status ${response.status}`);
-  }
-
-  const rawText = await response.text();
-  const sanitized = stripXssiPrefix(rawText).trim();
-  if (!sanitized) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(sanitized);
-  } catch (error) {
-    throw new Error('Unable to parse timed text response as JSON.');
-  }
-}
-
-function stripXssiPrefix(text) {
-  if (typeof text !== 'string') {
-    return '';
-  }
-  return text.replace(/^\)\]\}'\s*/u, '');
-}
-
 function parseTimedTextTrackListXml(xml) {
   if (typeof xml !== 'string' || !xml.trim()) {
     return [];
@@ -2103,30 +1939,24 @@ function parseTimedTextTrackListXml(xml) {
   return tracks;
 }
 
-function decodeHtmlEntity(value) {
-  return String(value)
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
-}
-
 function buildTimedTextRequestFromTrack(videoId, track) {
   if (!videoId || !track || typeof track !== 'object') {
     return null;
   }
 
-  const langCode = typeof track.lang_code === 'string' ? track.lang_code.trim() : '';
-  if (!langCode) {
-    return null;
-  }
+  const normalizedBase = buildTimedTextRequestUrl(track.baseUrl) || 'https://www.youtube.com/api/timedtext';
 
   try {
-    const url = new URL('https://www.youtube.com/api/timedtext');
+    const url = new URL(normalizedBase);
     url.searchParams.set('v', videoId);
-    url.searchParams.set('fmt', 'json3');
+
+    const langCode = typeof track.lang_code === 'string' ? track.lang_code.trim() : '';
+    if (!langCode) {
+      return null;
+    }
     url.searchParams.set('lang', langCode);
+
+    url.searchParams.set('fmt', 'json3');
 
     const name = typeof track.name === 'string' ? track.name.trim() : '';
     if (name) {
@@ -2148,1269 +1978,18 @@ function buildTimedTextRequestFromTrack(videoId, track) {
   } catch (error) {
     return null;
   }
-}
-
-function scoreTimedTextTrack(track) {
-  if (!track || typeof track !== 'object') {
-    return Number.NEGATIVE_INFINITY;
-  }
-
-  const langCode = typeof track.lang_code === 'string' ? track.lang_code.toLowerCase() : '';
-  const kind = typeof track.kind === 'string' ? track.kind.toLowerCase() : '';
-  const name = typeof track.name === 'string' ? track.name.toLowerCase() : '';
-  const vssId = typeof track.vss_id === 'string' ? track.vss_id.toLowerCase() : '';
-
-  let score = 0;
-
-  if (langCode === 'en') {
-    score += 40;
-  } else if (langCode.startsWith('en')) {
-    score += 35;
-  } else if (langCode) {
-    score += 10;
-  }
-
-  try {
-    const transcriptFromWatchPage = await fetchTranscriptFromWatchPage(videoId);
-    if (transcriptFromWatchPage) {
-      return transcriptFromWatchPage;
-    }
-  } catch (error) {
-    console.debug('Failed to fetch transcript from watch page', error);
-  }
-
-  try {
-    const transcriptFromTrackList = await fetchTranscriptFromTimedTextTrackList(videoId);
-    if (transcriptFromTrackList) {
-      return transcriptFromTrackList;
-    }
-  } catch (error) {
-    console.debug('Failed to fetch transcript via timed text track list', error);
-  }
-
-  const paramVariants = ['lang=en&fmt=json3', 'lang=en&kind=asr&fmt=json3', 'lang=en-US&fmt=json3', 'lang=en-US&kind=asr&fmt=json3'];
-
-  if (typeof track.lang_original === 'string' && track.lang_original.toLowerCase().includes('english')) {
-    score += 5;
-  }
-
-  if (name.includes('auto-generated')) {
-    score -= 1;
-  }
-
-  if (track.lang_default === 'true') {
-    score += 3;
-  }
-
-  return score;
-}
-
-async function fetchTranscriptFromWatchPage(videoId) {
-  const watchUrlCandidates = buildWatchPageUrlCandidates(videoId);
-
-  let lastError = null;
-  let playerResponse = null;
-
-  for (const watchUrl of watchUrlCandidates) {
-    if (!watchUrl) {
-      continue;
-    }
-
-    let response;
-    try {
-      response = await fetch(watchUrl, { credentials: 'include', redirect: 'follow' });
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Watch page request failed.');
-      continue;
-    }
-
-    if (!response.ok) {
-      lastError = new Error(`Watch page request failed with status ${response.status}`);
-      continue;
-    }
-
-    const html = await response.text();
-    if (isConsentInterstitialHtml(html)) {
-      lastError = new Error('Watch page request returned a consent interstitial.');
-      continue;
-    }
-
-    const parsed = extractPlayerResponseFromWatchHtml(html);
-    if (!parsed) {
-      lastError = new Error('Unable to locate player response in watch page HTML.');
-      continue;
-    }
-
-    playerResponse = parsed;
-    break;
-  }
-
-  if (!playerResponse) {
-    try {
-      playerResponse = await fetchPlayerResponseFromWatchTab(videoId, watchUrlCandidates);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to load watch page for transcript extraction.');
-    }
-  }
-
-  if (!playerResponse) {
-    throw lastError || new Error('Unable to locate player response in watch page HTML.');
-  }
-
-  const captionTrack = selectBestCaptionTrack(playerResponse);
-  if (!captionTrack || typeof captionTrack.baseUrl !== 'string') {
-    throw new Error('No caption track with a valid base URL was found in the player response.');
-  }
-
-  const requestUrl = buildTimedTextRequestUrl(captionTrack.baseUrl);
-  if (!requestUrl) {
-    throw new Error('Unable to normalize the caption track URL for transcript retrieval.');
-  }
-
-  const timedTextData = await fetchTimedTextJson(requestUrl);
-  if (!timedTextData) {
-    throw new Error('Timed text response from YouTube was empty.');
-  }
-
-  const formatted = parseTimedTextJson(timedTextData);
-  if (!formatted) {
-    throw new Error('Unable to format timed text transcript from YouTube watch page.');
-  }
-
-  return formatted;
-}
-
-function buildWatchPageUrlCandidates(videoId) {
-  const timestampParam = String(Math.max(1, Math.floor(Date.now() / 1000)));
-
-  return Array.from(
-    new Set(
-      [
-        buildWatchPageUrl(videoId),
-        buildWatchPageUrl(videoId, {
-          app: 'desktop',
-          persist_app: '1',
-          has_verified: '1',
-          hl: 'en',
-          gl: 'US',
-          persist_hl: '1',
-          persist_gl: '1',
-          bpctr: timestampParam
-        }),
-        buildWatchPageUrl(videoId, null, 'https://m.youtube.com/watch')
-      ].filter(Boolean)
-    )
-  );
-}
-
-async function fetchPlayerResponseFromWatchTab(videoId, candidates) {
-  const watchUrls = Array.isArray(candidates) && candidates.length > 0 ? candidates : buildWatchPageUrlCandidates(videoId);
-  let lastError = null;
-
-  for (const watchUrl of watchUrls) {
-    if (!watchUrl) {
-      continue;
-    }
-
-    let tab;
-    try {
-      tab = await chrome.tabs.create({ url: watchUrl, active: false });
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to open YouTube watch page.');
-      continue;
-    }
-
-    const tabId = tab?.id;
-    if (!tabId) {
-      lastError = new Error('Unable to open YouTube watch page.');
-      continue;
-    }
-
-    let closed = false;
-    const cleanup = async () => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      try {
-        await chrome.tabs.remove(tabId);
-      } catch (error) {
-        if (error && typeof error.message === 'string' && /No tab with id/.test(error.message)) {
-          return;
-        }
-        console.debug('Failed to close YouTube watch tab', error);
-      }
-    };
-
-    try {
-      await waitForTabComplete(tabId, WATCH_PAGE_LOAD_TIMEOUT_MS, 'YouTube watch page');
-      const evaluation = await evaluateWatchTabForPlayerResponse(tabId);
-      const parsed = parseWatchTabEvaluation(evaluation);
-      if (parsed) {
-        return parsed;
-      }
-      lastError = new Error('Watch tab did not expose a player response payload.');
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to extract player response from watch tab.');
-    } finally {
-      await cleanup();
-    }
-  }
-
-  throw lastError || new Error('Unable to extract player response from watch tab.');
-}
-
-async function evaluateWatchTabForPlayerResponse(tabId) {
-  try {
-    const [executionResult] = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: 'MAIN',
-      func: () => {
-        const result = {
-          playerResponseJson: null,
-          playerResponseError: null,
-          html: null,
-          htmlError: null
-        };
-
-        try {
-          if (window?.ytInitialPlayerResponse && typeof window.ytInitialPlayerResponse === 'object') {
-            result.playerResponseJson = JSON.stringify(window.ytInitialPlayerResponse);
-          } else if (window?.ytplayer?.config?.args?.player_response) {
-            result.playerResponseJson = window.ytplayer.config.args.player_response;
-          }
-        } catch (error) {
-          result.playerResponseError = error && typeof error.message === 'string' ? error.message : String(error);
-        }
-
-        if (!result.playerResponseJson) {
-          try {
-            const doc = document?.documentElement;
-            result.html = doc ? doc.innerHTML : '';
-          } catch (error) {
-            result.htmlError = error && typeof error.message === 'string' ? error.message : String(error);
-          }
-        }
-
-        return result;
-      }
-    });
-
-    return executionResult?.result ?? null;
-  } catch (error) {
-    throw error instanceof Error ? error : new Error('Unable to evaluate watch page for player response.');
-  }
-}
-
-function parseWatchTabEvaluation(evaluation) {
-  if (!evaluation || typeof evaluation !== 'object') {
-    throw new Error('Watch tab did not return evaluation data.');
-  }
-
-  const { playerResponseJson, html, playerResponseError, htmlError } = evaluation;
-
-  if (typeof playerResponseJson === 'string' && playerResponseJson.trim()) {
-    try {
-      return JSON.parse(playerResponseJson);
-    } catch (error) {
-      if (typeof html === 'string' && html.trim()) {
-        const parsed = extractPlayerResponseFromWatchHtml(html);
-        if (parsed) {
-          return parsed;
-        }
-      }
-      throw new Error('Unable to parse player response JSON from watch tab.');
-    }
-  }
-
-  if (typeof html === 'string' && html.trim()) {
-    const parsed = extractPlayerResponseFromWatchHtml(html);
-    if (parsed) {
-      return parsed;
-    }
-    throw new Error('Player response not found in watch tab HTML.');
-  }
-
-  if (typeof playerResponseError === 'string' && playerResponseError) {
-    throw new Error(`Watch tab reported player response error: ${playerResponseError}`);
-  }
-
-  if (typeof htmlError === 'string' && htmlError) {
-    throw new Error(`Watch tab reported HTML extraction error: ${htmlError}`);
-  }
-
-  throw new Error('Watch tab did not expose player response data.');
-}
-
-async function fetchTranscriptFromTimedTextTrackList(videoId) {
-  if (!videoId) {
-    return '';
-  }
-
-  const listUrl = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&type=list`;
-
-  const response = await fetch(listUrl, { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(`Timed text track list request failed with status ${response.status}`);
-  }
-
-  const xml = await response.text();
-  const tracks = parseTimedTextTrackListXml(xml);
-  if (tracks.length === 0) {
-    throw new Error('Timed text track list did not contain any tracks.');
-  }
-
-  const scoredTracks = tracks
-    .map((track, index) => ({ track, index, score: scoreTimedTextTrack(track) }))
-    .filter((entry) => Number.isFinite(entry.score))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return a.index - b.index;
-    });
-
-  const bestTrack = scoredTracks[0]?.track;
-  if (!bestTrack) {
-    throw new Error('Unable to select a caption track from the timed text track list.');
-  }
-
-  const requestUrl = buildTimedTextRequestFromTrack(videoId, bestTrack);
-  if (!requestUrl) {
-    throw new Error('Unable to build a timed text request URL from the selected track.');
-  }
-
-  const timedTextData = await fetchTimedTextJson(requestUrl);
-  if (!timedTextData) {
-    throw new Error('Timed text JSON response from track list request was empty.');
-  }
-
-  const formatted = parseTimedTextJson(timedTextData);
-  if (!formatted) {
-    throw new Error('Unable to format timed text transcript from track list request.');
-  }
-
-  return formatted;
-}
-
-function buildWatchPageUrl(videoId, queryOverrides = null, baseUrl = 'https://www.youtube.com/watch') {
-  if (!videoId) {
-    return null;
-  }
-
-  try {
-    const url = new URL(baseUrl);
-    url.searchParams.set('v', videoId);
-
-    if (queryOverrides && typeof queryOverrides === 'object') {
-      for (const [key, value] of Object.entries(queryOverrides)) {
-        if (value === undefined || value === null) {
-          continue;
-        }
-        url.searchParams.set(key, String(value));
-      }
-    }
-
-    return url.toString();
-  } catch (error) {
-    return null;
-  }
-}
-
-function extractPlayerResponseFromWatchHtml(html) {
-  if (typeof html !== 'string' || !html) {
-    return null;
-  }
-
-  const assignmentMarkers = [
-    'ytInitialPlayerResponse =',
-    'var ytInitialPlayerResponse =',
-    'let ytInitialPlayerResponse =',
-    'const ytInitialPlayerResponse =',
-    'window["ytInitialPlayerResponse"] =',
-    'window.ytInitialPlayerResponse =',
-    'self.ytInitialPlayerResponse =',
-    'this.ytInitialPlayerResponse ='
-  ];
-  for (const marker of assignmentMarkers) {
-    const parsed = extractJsonObjectFromAssignment(html, marker);
-    if (parsed) {
-      return parsed;
-    }
-  }
-
-  const inlineMatch = html.match(/"playerResponse":\s*(\{.*?\})\s*,\s*"responseContext"/s);
-  if (inlineMatch) {
-    try {
-      return JSON.parse(inlineMatch[1]);
-    } catch (error) {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function isConsentInterstitialHtml(html) {
-  if (typeof html !== 'string' || !html) {
-    return false;
-  }
-
-  const lower = html.slice(0, 50000).toLowerCase();
-  if (!lower.includes('consent.youtube.com') && !lower.includes('consent.google.com')) {
-    return false;
-  }
-
-  if (lower.includes('before you continue to youtube')) {
-    return true;
-  }
-
-  if (/<form[^>]+action="https:\/\/consent\.youtube\.com\//i.test(html)) {
-    return true;
-  }
-
-  return false;
-}
-
-function extractJsonObjectFromAssignment(source, marker) {
-  if (typeof source !== 'string' || !marker) {
-    return null;
-  }
-
-  let searchIndex = 0;
-
-  while (searchIndex < source.length) {
-    const index = source.indexOf(marker, searchIndex);
-    if (index === -1) {
-      break;
-    }
-
-    let cursor = index + marker.length;
-
-    while (cursor < source.length) {
-      const current = source[cursor];
-
-      if (/\s/.test(current) || current === '=') {
-        cursor += 1;
-        continue;
-    }
-
-    if (current === '(' || current === '!' || current === ')') {
-      cursor += 1;
-      continue;
-    }
-
-      if (current === '{') {
-        const jsonText = extractBalancedJson(source, cursor);
-        if (jsonText) {
-          try {
-            return JSON.parse(jsonText);
-          } catch (error) {
-            // continue scanning for other payloads
-          }
-        }
-        cursor += 1;
-        continue;
-      }
-
-      if (current === '"' || current === '\'') {
-        const literal = extractJsStringLiteral(source, cursor);
-        if (!literal) {
-          cursor += 1;
-          continue;
-        }
-        const decoded = decodeJsStringLiteral(literal);
-        if (decoded !== null) {
-          try {
-            return JSON.parse(decoded);
-          } catch (error) {
-            // fall through and continue scanning after the literal
-          }
-        }
-        cursor += literal.length;
-        continue;
-      }
-
-      if (source.startsWith('JSON.parse', cursor)) {
-        const openParenIndex = source.indexOf('(', cursor);
-        if (openParenIndex === -1) {
-          cursor += 'JSON.parse'.length;
-          continue;
-        }
-
-        const argumentInfo = extractJsonParseArgument(source, openParenIndex + 1);
-        if (argumentInfo) {
-          cursor = argumentInfo.cursorAfter;
-          if (argumentInfo.payload !== null) {
-            try {
-              return JSON.parse(argumentInfo.payload);
-            } catch (error) {
-              // continue scanning for additional payloads
-            }
-          }
-          continue;
-        }
-
-        cursor = openParenIndex + 1;
-        continue;
-      }
-
-      if (/[A-Za-z0-9_$.[\]]/.test(current)) {
-        cursor = advancePastIdentifierChain(source, cursor);
-        continue;
-      }
-
-      if (current === '|' || current === '&' || current === '?' || current === ':' || current === '+' || current === '-') {
-        cursor += 1;
-        continue;
-      }
-
-      cursor += 1;
-    }
-
-    searchIndex = index + marker.length;
-  }
-
-  return null;
-}
-
-const JSON_STRING_WRAPPER_SET = new Set(['decodeURIComponent', 'decodeURI', 'unescape', 'atob']);
-
-function extractJsonParseArgument(source, startIndex) {
-  if (typeof source !== 'string' || startIndex >= source.length) {
-    return null;
-  }
-
-  let cursor = startIndex;
-  const wrappers = [];
-
-  while (cursor < source.length) {
-    while (cursor < source.length && /\s/.test(source[cursor])) {
-      cursor += 1;
-    }
-
-    if (cursor >= source.length) {
-      break;
-    }
-
-    const current = source[cursor];
-
-    if (current === '"' || current === '\'') {
-      const literal = extractJsStringLiteral(source, cursor);
-      if (!literal) {
-        return null;
-      }
-
-      cursor += literal.length;
-      const decoded = decodeJsStringLiteral(literal);
-      const payload = decoded === null ? null : applyJsonStringWrappers(decoded, wrappers);
-      const cursorAfter = skipTrailingParensAndWhitespace(source, cursor);
-
-      return {
-        payload,
-        cursorAfter
-      };
-    }
-
-    if (/[A-Za-z_$]/.test(current)) {
-      const identifierStart = cursor;
-      cursor = advancePastIdentifierChain(source, cursor);
-      const identifier = source.slice(identifierStart, cursor);
-
-      if (!JSON_STRING_WRAPPER_SET.has(identifier)) {
-        return null;
-      }
-
-      while (cursor < source.length && /\s/.test(source[cursor])) {
-        cursor += 1;
-      }
-
-      if (source[cursor] !== '(') {
-        return null;
-      }
-
-      cursor += 1;
-      wrappers.push(identifier);
-      continue;
-    }
-
-    if (current === '(') {
-      cursor += 1;
-      continue;
-    }
-
-    if (current === ')') {
-      cursor += 1;
-      continue;
-    }
-
-    return null;
-  }
-
-  return null;
-}
-
-function skipTrailingParensAndWhitespace(source, startIndex) {
-  let cursor = startIndex;
-
-  while (cursor < source.length && /\s/.test(source[cursor])) {
-    cursor += 1;
-  }
-
-  while (cursor < source.length && source[cursor] === ')') {
-    cursor += 1;
-    while (cursor < source.length && /\s/.test(source[cursor])) {
-      cursor += 1;
-    }
-  }
-
-  return cursor;
-}
-
-function applyJsonStringWrappers(value, wrappers) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  if (!Array.isArray(wrappers) || wrappers.length === 0) {
-    return value;
-  }
-
-  let result = value;
-  for (let index = wrappers.length - 1; index >= 0; index -= 1) {
-    result = decodeJsonWrapper(wrappers[index], result);
-    if (result === null) {
-      return null;
-    }
-  }
-
-  return result;
-}
-
-function decodeJsonWrapper(wrapper, value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  try {
-    switch (wrapper) {
-      case 'decodeURIComponent':
-        return decodeURIComponent(value);
-      case 'decodeURI':
-        return decodeURI(value);
-      case 'unescape':
-        return decodeUsingUnescape(value);
-      case 'atob':
-        return decodeBase64(value);
-      default:
-        return null;
-    }
-  } catch (error) {
-    return null;
-  }
-}
-
-function decodeUsingUnescape(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  let result = value.replace(/%u([0-9A-Fa-f]{4})/g, (_, hex) => {
-    const codePoint = Number.parseInt(hex, 16);
-    if (!Number.isFinite(codePoint)) {
-      return '';
-    }
-    return String.fromCharCode(codePoint);
-  });
-
-  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => {
-    const codePoint = Number.parseInt(hex, 16);
-    if (!Number.isFinite(codePoint)) {
-      return '';
-    }
-    return String.fromCharCode(codePoint);
-  });
-
-  try {
-    return decodeURIComponent(result);
-  } catch (error) {
-    return result;
-  }
-}
-
-function decodeBase64(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  try {
-    if (typeof atob === 'function') {
-      return atob(value);
-    }
-  } catch (error) {
-    // fall through to Buffer handling
-  }
-
-  if (typeof Buffer !== 'undefined') {
-    try {
-      return Buffer.from(value, 'base64').toString('utf8');
-    } catch (error) {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function advancePastIdentifierChain(source, startIndex) {
-  let cursor = startIndex;
-  while (cursor < source.length) {
-    const character = source[cursor];
-    if (/[A-Za-z0-9_$]/.test(character)) {
-      cursor += 1;
-      continue;
-    }
-
-    if (character === '.') {
-      cursor += 1;
-      continue;
-    }
-
-    if (character === '[') {
-      cursor += 1;
-      while (cursor < source.length && /\s/.test(source[cursor])) {
-        cursor += 1;
-      }
-
-      if (cursor >= source.length) {
-        return cursor;
-      }
-
-      const bracketStart = source[cursor];
-      if (bracketStart === '"' || bracketStart === '\'') {
-        const literal = extractJsStringLiteral(source, cursor);
-        if (!literal) {
-          return cursor;
-        }
-        cursor += literal.length;
-        while (cursor < source.length && /\s/.test(source[cursor])) {
-          cursor += 1;
-        }
-        if (source[cursor] === ']') {
-          cursor += 1;
-          continue;
-        }
-        return cursor;
-      }
-
-      while (cursor < source.length && source[cursor] !== ']') {
-        cursor += 1;
-      }
-      if (source[cursor] === ']') {
-        cursor += 1;
-      }
-      continue;
-    }
-
-    if (character === ']') {
-      cursor += 1;
-      continue;
-    }
-
-    break;
-  }
-
-  return cursor;
-}
-
-function extractBalancedJson(source, startIndex) {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = startIndex; index < source.length; index += 1) {
-    const character = source[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (character === '\\') {
-      escaped = true;
-      continue;
-    }
-
-    if (character === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) {
-      continue;
-    }
-
-    if (character === '{') {
-      depth += 1;
-    } else if (character === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return source.slice(startIndex, index + 1);
-      }
-    }
-  }
-
-  return null;
-}
-
-function extractJsStringLiteral(source, startIndex) {
-  const quote = source[startIndex];
-  let cursor = startIndex + 1;
-  let escaped = false;
-
-  while (cursor < source.length) {
-    const character = source[cursor];
-    if (escaped) {
-      escaped = false;
-    } else if (character === '\\') {
-      escaped = true;
-    } else if (character === quote) {
-      return source.slice(startIndex, cursor + 1);
-    }
-    cursor += 1;
-  }
-
-  return null;
-}
-
-function decodeJsStringLiteral(literal) {
-  if (typeof literal !== 'string' || literal.length < 2) {
-    return null;
-  }
-
-  const quote = literal[0];
-  if ((quote !== '"' && quote !== '\'') || literal[literal.length - 1] !== quote) {
-    return null;
-  }
-
-  let result = '';
-  for (let index = 1; index < literal.length - 1; index += 1) {
-    const character = literal[index];
-    if (character === '\\') {
-      index += 1;
-      if (index >= literal.length - 1) {
-        break;
-      }
-
-      const next = literal[index];
-      switch (next) {
-        case 'n':
-          result += '\n';
-          break;
-        case 'r':
-          result += '\r';
-          break;
-        case 't':
-          result += '\t';
-          break;
-        case 'b':
-          result += '\b';
-          break;
-        case 'f':
-          result += '\f';
-          break;
-        case 'v':
-          result += '\v';
-          break;
-        case '0':
-          result += '\0';
-          break;
-        case '\\':
-          result += '\\';
-          break;
-        case '\'':
-          result += '\'';
-          break;
-        case '"':
-          result += '"';
-          break;
-        case 'x': {
-          const hex = literal.slice(index + 1, index + 3);
-          if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
-            result += String.fromCharCode(Number.parseInt(hex, 16));
-            index += 2;
-          } else {
-            result += next;
-          }
-          break;
-        }
-        case 'u': {
-          const hex = literal.slice(index + 1, index + 5);
-          if (/^[0-9A-Fa-f]{4}$/.test(hex)) {
-            result += String.fromCharCode(Number.parseInt(hex, 16));
-            index += 4;
-          } else {
-            result += next;
-          }
-          break;
-        }
-        default:
-          result += next;
-          break;
-      }
-    } else {
-      result += character;
-    }
-  }
-
-  return result;
-}
-
-function selectBestCaptionTrack(playerResponse) {
-  const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!Array.isArray(tracks) || tracks.length === 0) {
-    return null;
-  }
-
-  const viableTracks = tracks.filter((track) => track && typeof track.baseUrl === 'string' && track.baseUrl.trim().length > 0);
-  if (viableTracks.length === 0) {
-    return null;
-  }
-
-  const scored = viableTracks
-    .map((track, index) => ({ track, index, score: scoreCaptionTrack(track) }))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return a.index - b.index;
-    });
-
-  return scored[0]?.track ?? null;
-}
-
-function scoreCaptionTrack(track) {
-  if (!track || typeof track !== 'object') {
-    return Number.NEGATIVE_INFINITY;
-  }
-
-  let score = 0;
-  const languageCode = typeof track.languageCode === 'string' ? track.languageCode.toLowerCase() : '';
-  const vssId = typeof track.vssId === 'string' ? track.vssId.toLowerCase() : '';
-  const trackKind = typeof track.kind === 'string' ? track.kind.toLowerCase() : '';
-
-  if (languageCode === 'en') {
-    score += 30;
-  } else if (languageCode.startsWith('en')) {
-    score += 25;
-  } else if (languageCode) {
-    score += 10;
-  }
-
-  if (!trackKind) {
-    score += 5;
-  } else if (trackKind === 'asr') {
-    score -= 5;
-  }
-
-  if (vssId.startsWith('a.')) {
-    score -= 2;
-  }
-
-  const cleanedFallback = cleanGlaspTranscript(fallbackLines.join('\n'));
-  if (!cleanedFallback) {
-    throw new Error('Transcript data not found on Glasp for this video.');
-  }
-
-  return cleanedFallback;
-}
-
-function cleanGlaspTranscript(transcript) {
-  if (typeof transcript !== 'string') {
-    return '';
-  }
-
-  const normalized = transcript.replace(/\r/g, '\n');
-  const lines = normalized
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  if (lines.length === 0) {
-    return '';
-  }
-
-  const strippedLines = stripLeadingGlaspMetadataLines(lines);
-  const joined = strippedLines.join('\n').trim();
-  if (!joined) {
-    return '';
-  }
-
-  const cleaned = stripResidualGlaspControlsPrefix(joined);
-  return (cleaned || joined).trim();
-}
-
-function stripLeadingGlaspMetadataLines(lines) {
-  if (!Array.isArray(lines)) {
-    return [];
-  }
-
-  const cleaned = [];
-  let skipping = true;
-  let skipNext = false;
-  let removedAny = false;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    if (skipNext) {
-      skipNext = false;
-      removedAny = true;
-      continue;
-    }
-
-    const current = lines[index];
-    const trimmed = typeof current === 'string' ? current.trim() : '';
-
-    if (!trimmed) {
-      if (skipping) {
-        removedAny = true;
-        continue;
-      }
-      cleaned.push(trimmed);
-      continue;
-    }
-
-    if (!skipping) {
-      cleaned.push(trimmed);
-      continue;
-    }
-
-    const processed = stripGlaspMetadataPrefix(trimmed, removedAny);
-    if (processed.skipNextLine) {
-      skipNext = true;
-    }
-
-    if (processed.text) {
-      cleaned.push(processed.text);
-      skipping = false;
-    } else if (!processed.removed) {
-      cleaned.push(trimmed);
-      skipping = false;
-    }
-
-    if (processed.removed) {
-      removedAny = true;
-    }
-  }
-
-  return cleaned;
-}
-
-function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
-  if (typeof line !== 'string') {
-    return { text: '', removed: false, skipNextLine: false };
-  }
-
-  const monthNames = [
-    'january',
-    'february',
-    'march',
-    'april',
-    'may',
-    'june',
-    'july',
-    'august',
-    'september',
-    'october',
-    'november',
-    'december'
-  ];
-
-  const datePattern = new RegExp(
-    `^(?:${monthNames.join('|')})\\s+\\d{1,2},\\s*\\d{4}`,
-    'i'
-  );
-
-  const tokenPatterns = [
-    /^glasp\s*reader/i,
-    /^youtube\s*transcript\s*&\s*summary/i,
-    /^&\s*summary/i,
-    /^youtube\s*video\s*player/i,
-    /^transcripts?/i,
-    /^share\s*video/i,
-    /^download\s*\.?srt/i,
-    /^copy(?:\s*transcript)?/i,
-    /^summarize\s*transcript/i,
-    /^english\s*\(auto-generated\)/i,
-    /^share\s*this\s*page/i,
-    /^get\s*(?:youtube\s*)?video\s*transcript\s*&\s*summary/i,
-    /^get\s*transcript\s*&\s*summary/i
-  ];
-
-  let working = line.trimStart();
-  let removedAny = false;
-  let skipNextLine = false;
-
-  for (let iteration = 0; iteration < 50; iteration += 1) {
-    if (!working) {
-      break;
-    }
-
-    let matched = false;
-
-    const hashtagMatch = working.match(/^#[^\s#]+/);
-    if (hashtagMatch) {
-      working = working.slice(hashtagMatch[0].length).trimStart();
-      removedAny = true;
-      matched = true;
-    }
-
-    if (!matched) {
-      const dateMatch = working.match(datePattern);
-      if (dateMatch) {
-        working = working.slice(dateMatch[0].length).trimStart();
-        removedAny = true;
-        matched = true;
-      }
-    }
-
-    if (!matched) {
-      const numericDateMatch = working.match(/^\d{1,2},\s*\d{4}/);
-      if (numericDateMatch) {
-        working = working.slice(numericDateMatch[0].length).trimStart();
-        removedAny = true;
-        matched = true;
-      }
-    }
-
-    if (!matched) {
-      for (const pattern of tokenPatterns) {
-        const tokenMatch = working.match(pattern);
-        if (tokenMatch) {
-          working = working.slice(tokenMatch[0].length).trimStart();
-          removedAny = true;
-          matched = true;
-          break;
-        }
-      }
-    }
-
-    if (!matched) {
-      const fusedControlMatch = working.match(
-        /(?:share\s*video|download\s*\.?srt|copy(?:\s*transcript)?|summarize\s*transcript)/i
-      );
-      if (fusedControlMatch && fusedControlMatch.index !== undefined && fusedControlMatch.index < 200) {
-        const sliceIndex = fusedControlMatch.index + fusedControlMatch[0].length;
-        const remainder = working.slice(sliceIndex).trimStart();
-        if (remainder) {
-          working = remainder;
-          removedAny = true;
-          matched = true;
-        }
-      }
-    }
-
-    if (!matched) {
-      const byMatch = working.match(/^by(?:\b|\s+|(?=[A-Z#]))/i);
-      if (byMatch) {
-        if (!removedAny && !hasRemovedEarlier) {
-          // Avoid stripping genuine transcript lines that begin with "By" when no
-          // earlier metadata tokens have been removed from this or previous lines.
-          matched = false;
-        } else {
-          working = working.slice(byMatch[0].length);
-          working = working.trimStart();
-          removedAny = true;
-          matched = true;
-
-          const nameMatch = working.match(/^[A-Z][A-Za-z0-9'._-]*(?:\s+[A-Za-z0-9'._-]+)*/);
-          if (nameMatch) {
-            working = working.slice(nameMatch[0].length);
-          } else {
-            skipNextLine = true;
-          }
-
-          working = working.trimStart();
-        }
-      }
-    }
-
-    if (!matched && removedAny) {
-      const videoMatch = working.match(/^video/i);
-      if (videoMatch) {
-        const remainder = working.slice(videoMatch[0].length).trimStart();
-        if (/^download/i.test(remainder)) {
-          working = remainder;
-          matched = true;
-        }
-      }
-    }
-
-    if (!matched && /^s$/i.test(working)) {
-      working = '';
-      removedAny = true;
-      matched = true;
-    }
-
-    if (!matched && removedAny && working && (working[0] === 's' || working[0] === 'S')) {
-      working = working.slice(1).trimStart();
-      matched = true;
-    }
-
-    if (!matched) {
-      break;
-    }
-  }
-
-  return {
-    text: working.trimStart(),
-    removed: removedAny,
-    skipNextLine
-  };
-}
-
-function stripResidualGlaspControlsPrefix(text) {
-  if (typeof text !== 'string') {
-    return '';
-  }
-
-  let working = text.trimStart();
-  if (!working) {
-    return '';
-  }
-
-  const scanWindow = working.slice(0, 500);
-  const controlPattern = /(Share\s*Video|Download\s*\.?srt|Copy(?:\s*Transcript)?|Summarize\s*Transcript|English\s*\(auto-generated\))/gi;
-  let match;
-  let lastEnd = -1;
-
-  while ((match = controlPattern.exec(scanWindow)) !== null) {
-    lastEnd = match.index + match[0].length;
-  }
-
-  if (lastEnd >= 0) {
-    const remainder = working.slice(lastEnd).trimStart();
-    if (remainder) {
-      return remainder;
-    }
-  }
-
-  const residualMetadataPattern = /^(?:#[^\s#]+|Glasp\s*Reader|YouTube\s*Transcript|Transcripts?|English\s*\(auto-generated\)|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}|\d{1,2},\s*\d{4}|by\b)/i;
-  const metadataDetected = residualMetadataPattern.test(working);
-  const processed = stripGlaspMetadataPrefix(working, metadataDetected);
-  if (processed.removed && processed.text) {
-    return processed.text;
-  }
-
-  return working;
 }
 
 function buildTimedTextRequestUrl(baseUrl) {
-  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
+  if (typeof baseUrl !== 'string' || !baseUrl) {
     return null;
   }
 
   try {
     const url = new URL(baseUrl);
-    url.searchParams.set('fmt', 'json3');
+    if (!url.searchParams.has('fmt')) {
+      url.searchParams.set('fmt', 'json3');
+    }
     return url.toString();
   } catch (error) {
     return null;
@@ -3447,2372 +2026,37 @@ function stripXssiPrefix(text) {
   return text.replace(/^\)\]\}'\s*/u, '');
 }
 
-function parseTimedTextTrackListXml(xml) {
-  if (typeof xml !== 'string' || !xml.trim()) {
-    return [];
-  }
-
-  const decoded = xml.replace(/<!DOCTYPE[^>]*>/gi, '').replace(/<!--.*?-->/gs, '');
-  const trackRegex = /<track\s+([^>]+?)\s*\/?>(?:<\/track>)?/gi;
-  const attributeRegex = /([\w-]+)="([^"]*)"/g;
-  const tracks = [];
-
-  let trackMatch;
-  while ((trackMatch = trackRegex.exec(decoded)) !== null) {
-    const attrs = trackMatch[1];
-    const track = {};
-    let attributeMatch;
-    while ((attributeMatch = attributeRegex.exec(attrs)) !== null) {
-      const [, key, value] = attributeMatch;
-      track[key] = decodeHtmlEntity(value);
-    }
-
-    if (typeof track.lang_code === 'string' && track.lang_code.trim()) {
-      tracks.push(track);
-    }
-  }
-
-  return tracks;
-}
-
-function decodeHtmlEntity(value) {
-  return String(value)
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
-}
-
-function buildTimedTextRequestFromTrack(videoId, track) {
-  if (!videoId || !track || typeof track !== 'object') {
-    return null;
-  }
-
-  const langCode = typeof track.lang_code === 'string' ? track.lang_code.trim() : '';
-  if (!langCode) {
-    return null;
-  }
-
-  try {
-    const url = new URL('https://www.youtube.com/api/timedtext');
-    url.searchParams.set('v', videoId);
-    url.searchParams.set('fmt', 'json3');
-    url.searchParams.set('lang', langCode);
-
-    const name = typeof track.name === 'string' ? track.name.trim() : '';
-    if (name) {
-      url.searchParams.set('name', name);
-    }
-
-    const kind = typeof track.kind === 'string' ? track.kind.trim() : '';
-    if (kind) {
-      url.searchParams.set('kind', kind);
-    } else if (typeof track.vss_id === 'string' && track.vss_id.toLowerCase().startsWith('a.')) {
-      url.searchParams.set('kind', 'asr');
-    }
-
-    if (typeof track.vss_id === 'string' && track.vss_id.trim()) {
-      url.searchParams.set('vssids', track.vss_id.trim());
-    }
-
-async function ensureTranscriptHasTimestamps(transcript, videoUrl) {
-  const cleanedTranscript = cleanGlaspTranscript(transcript);
-  if (transcriptHasTimestamps(cleanedTranscript)) {
-    return cleanedTranscript;
-  }
-}
-
-function scoreTimedTextTrack(track) {
-  if (!track || typeof track !== 'object') {
-    return Number.NEGATIVE_INFINITY;
-  }
-
-  return cleanedTranscript;
-}
-
-  let score = 0;
-
-  if (langCode === 'en') {
-    score += 40;
-  } else if (langCode.startsWith('en')) {
-    score += 35;
-  } else if (langCode) {
-    score += 10;
-  }
-
-  if (kind === 'asr' || vssId.startsWith('a.')) {
-    score -= 5;
-  }
-
-  const watchUrlCandidates = buildWatchPageUrlCandidates(videoId);
-
-  try {
-    const transcriptFromWatchPage = await fetchTranscriptFromWatchPage(videoId, watchUrlCandidates);
-    if (transcriptFromWatchPage) {
-      return transcriptFromWatchPage;
-    }
-  } catch (error) {
-    console.debug('Failed to fetch transcript from watch page', error);
-  }
-
-  try {
-    const transcriptFromTrackList = await fetchTranscriptFromTimedTextTrackList(videoId);
-    if (transcriptFromTrackList) {
-      return transcriptFromTrackList;
-    }
-  } catch (error) {
-    console.debug('Failed to fetch transcript via timed text track list', error);
-  }
-
-  const paramVariants = ['lang=en&fmt=json3', 'lang=en&kind=asr&fmt=json3', 'lang=en-US&fmt=json3', 'lang=en-US&kind=asr&fmt=json3'];
-
-  if (name.includes('auto-generated')) {
-    score -= 1;
-  }
-
-  if (track.lang_default === 'true') {
-    score += 3;
-  }
-
-  return score;
-}
-
-async function fetchTranscriptFromWatchPage(videoId, watchUrlCandidates) {
-  const candidates = Array.isArray(watchUrlCandidates) && watchUrlCandidates.length > 0
-    ? watchUrlCandidates
-    : buildWatchPageUrlCandidates(videoId);
-
-  let lastError = null;
-  let playerResponse = null;
-
-  for (const watchUrl of candidates) {
-    if (!watchUrl) {
-      continue;
-    }
-
-    let response;
-    try {
-      response = await fetch(watchUrl, { credentials: 'include', redirect: 'follow' });
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Watch page request failed.');
-      continue;
-    }
-
-    if (!response.ok) {
-      lastError = new Error(`Watch page request failed with status ${response.status}`);
-      continue;
-    }
-
-    const html = await response.text();
-    if (isConsentInterstitialHtml(html)) {
-      lastError = new Error('Watch page request returned a consent interstitial.');
-      continue;
-    }
-
-    const parsed = extractPlayerResponseFromWatchHtml(html);
-    if (!parsed) {
-      lastError = new Error('Unable to locate player response in watch page HTML.');
-      continue;
-    }
-
-    playerResponse = parsed;
-    break;
-  }
-
-  if (!playerResponse) {
-    try {
-      playerResponse = await fetchPlayerResponseFromWatchTab(videoId, candidates);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to load watch page for transcript extraction.');
-    }
-  }
-
-  if (!playerResponse) {
-    throw lastError || new Error('Unable to locate player response in watch page HTML.');
-  }
-
-  const captionTrack = selectBestCaptionTrack(playerResponse);
-  if (!captionTrack || typeof captionTrack.baseUrl !== 'string') {
-    throw new Error('No caption track with a valid base URL was found in the player response.');
-  }
-
-  const requestUrl = buildTimedTextRequestUrl(captionTrack.baseUrl);
-  if (!requestUrl) {
-    throw new Error('Unable to normalize the caption track URL for transcript retrieval.');
-  }
-
-  const timedTextData = await fetchTimedTextJson(requestUrl);
-  if (!timedTextData) {
-    throw new Error('Timed text response from YouTube was empty.');
-  }
-
-  const formatted = parseTimedTextJson(timedTextData);
-  if (!formatted) {
-    throw new Error('Unable to format timed text transcript from YouTube watch page.');
-  }
-
-  return formatted;
-}
-
-function buildWatchPageUrlCandidates(videoId) {
-  const timestampParam = String(Math.max(1, Math.floor(Date.now() / 1000)));
-
-  return Array.from(
-    new Set(
-      [
-        buildWatchPageUrl(videoId),
-        buildWatchPageUrl(videoId, {
-          app: 'desktop',
-          persist_app: '1',
-          has_verified: '1',
-          hl: 'en',
-          gl: 'US',
-          persist_hl: '1',
-          persist_gl: '1',
-          bpctr: timestampParam
-        }),
-        buildWatchPageUrl(videoId, null, 'https://m.youtube.com/watch')
-      ].filter(Boolean)
-    )
-  );
-}
-
-async function fetchPlayerResponseFromWatchTab(videoId, candidates) {
-  const watchUrls = Array.isArray(candidates) && candidates.length > 0 ? candidates : buildWatchPageUrlCandidates(videoId);
-  let lastError = null;
-
-  for (const watchUrl of watchUrls) {
-    if (!watchUrl) {
-      continue;
-    }
-
-    let tab;
-    try {
-      tab = await chrome.tabs.create({ url: watchUrl, active: false });
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to open YouTube watch page.');
-      continue;
-    }
-
-    const tabId = tab?.id;
-    if (!tabId) {
-      lastError = new Error('Unable to open YouTube watch page.');
-      continue;
-    }
-
-    let closed = false;
-    const cleanup = async () => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      try {
-        await chrome.tabs.remove(tabId);
-      } catch (error) {
-        if (error && typeof error.message === 'string' && /No tab with id/.test(error.message)) {
-          return;
-        }
-        console.debug('Failed to close YouTube watch tab', error);
-      }
-    };
-
-    try {
-      await waitForTabComplete(tabId, WATCH_PAGE_LOAD_TIMEOUT_MS, 'YouTube watch page');
-      const evaluation = await evaluateWatchTabForPlayerResponse(tabId);
-      const parsed = parseWatchTabEvaluation(evaluation);
-      if (parsed) {
-        return parsed;
-      }
-      lastError = new Error('Watch tab did not expose a player response payload.');
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to extract player response from watch tab.');
-    } finally {
-      await cleanup();
-    }
-  }
-
-  throw lastError || new Error('Unable to extract player response from watch tab.');
-}
-
-async function evaluateWatchTabForPlayerResponse(tabId) {
-  try {
-    const [executionResult] = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: 'MAIN',
-      func: () => {
-        const result = {
-          playerResponseJson: null,
-          playerResponseError: null,
-          html: null,
-          htmlError: null
-        };
-
-        try {
-          if (window?.ytInitialPlayerResponse && typeof window.ytInitialPlayerResponse === 'object') {
-            result.playerResponseJson = JSON.stringify(window.ytInitialPlayerResponse);
-          } else if (window?.ytplayer?.config?.args?.player_response) {
-            result.playerResponseJson = window.ytplayer.config.args.player_response;
-          }
-        } catch (error) {
-          result.playerResponseError = error && typeof error.message === 'string' ? error.message : String(error);
-        }
-
-        if (!result.playerResponseJson) {
-          try {
-            const doc = document?.documentElement;
-            result.html = doc ? doc.innerHTML : '';
-          } catch (error) {
-            result.htmlError = error && typeof error.message === 'string' ? error.message : String(error);
-          }
-        }
-
-        return result;
-      }
-    });
-
-    return executionResult?.result ?? null;
-  } catch (error) {
-    throw error instanceof Error ? error : new Error('Unable to evaluate watch page for player response.');
-  }
-}
-
-function parseWatchTabEvaluation(evaluation) {
-  if (!evaluation || typeof evaluation !== 'object') {
-    throw new Error('Watch tab did not return evaluation data.');
-  }
-
-  const { playerResponseJson, html, playerResponseError, htmlError } = evaluation;
-
-  if (typeof playerResponseJson === 'string' && playerResponseJson.trim()) {
-    try {
-      return JSON.parse(playerResponseJson);
-    } catch (error) {
-      if (typeof html === 'string' && html.trim()) {
-        const parsed = extractPlayerResponseFromWatchHtml(html);
-        if (parsed) {
-          return parsed;
-        }
-      }
-      throw new Error('Unable to parse player response JSON from watch tab.');
-    }
-  }
-
-  if (typeof html === 'string' && html.trim()) {
-    const parsed = extractPlayerResponseFromWatchHtml(html);
-    if (parsed) {
-      return parsed;
-    }
-    throw new Error('Player response not found in watch tab HTML.');
-  }
-
-  if (typeof playerResponseError === 'string' && playerResponseError) {
-    throw new Error(`Watch tab reported player response error: ${playerResponseError}`);
-  }
-
-  if (typeof htmlError === 'string' && htmlError) {
-    throw new Error(`Watch tab reported HTML extraction error: ${htmlError}`);
-  }
-
-  throw new Error('Watch tab did not expose player response data.');
-}
-
-async function fetchTranscriptFromTimedTextTrackList(videoId) {
-  if (!videoId) {
+function parseTimedTextJson(data) {
+  if (!data || typeof data !== 'object') {
     return '';
   }
 
-  const listUrl = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&type=list`;
-
-  const response = await fetch(listUrl, { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(`Timed text track list request failed with status ${response.status}`);
-  }
-
-  const xml = await response.text();
-  const tracks = parseTimedTextTrackListXml(xml);
-  if (tracks.length === 0) {
-    throw new Error('Timed text track list did not contain any tracks.');
-  }
-
-  const scoredTracks = tracks
-    .map((track, index) => ({ track, index, score: scoreTimedTextTrack(track) }))
-    .filter((entry) => Number.isFinite(entry.score))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return a.index - b.index;
-    });
-
-  const bestTrack = scoredTracks[0]?.track;
-  if (!bestTrack) {
-    throw new Error('Unable to select a caption track from the timed text track list.');
-  }
-
-  const requestUrl = buildTimedTextRequestFromTrack(videoId, bestTrack);
-  if (!requestUrl) {
-    throw new Error('Unable to build a timed text request URL from the selected track.');
-  }
-
-  const timedTextData = await fetchTimedTextJson(requestUrl);
-  if (!timedTextData) {
-    throw new Error('Timed text JSON response from track list request was empty.');
-  }
-
-  const formatted = parseTimedTextJson(timedTextData);
-  if (!formatted) {
-    throw new Error('Unable to format timed text transcript from track list request.');
-  }
-
-  return formatted;
-}
-
-function buildWatchPageUrl(videoId, queryOverrides = null, baseUrl = 'https://www.youtube.com/watch') {
-  if (!videoId) {
-    return null;
-  }
-
-  try {
-    const url = new URL(baseUrl);
-    url.searchParams.set('v', videoId);
-
-    if (queryOverrides && typeof queryOverrides === 'object') {
-      for (const [key, value] of Object.entries(queryOverrides)) {
-        if (value === undefined || value === null) {
-          continue;
-        }
-        url.searchParams.set(key, String(value));
-      }
-    }
-
-    return url.toString();
-  } catch (error) {
-    return null;
-  }
-}
-
-function extractPlayerResponseFromWatchHtml(html) {
-  if (typeof html !== 'string' || !html) {
-    return null;
-  }
-
-  const assignmentMarkers = [
-    'ytInitialPlayerResponse =',
-    'var ytInitialPlayerResponse =',
-    'let ytInitialPlayerResponse =',
-    'const ytInitialPlayerResponse =',
-    'window["ytInitialPlayerResponse"] =',
-    'window.ytInitialPlayerResponse =',
-    'self.ytInitialPlayerResponse =',
-    'this.ytInitialPlayerResponse ='
-  ];
-  for (const marker of assignmentMarkers) {
-    const parsed = extractJsonObjectFromAssignment(html, marker);
-    if (parsed) {
-      return parsed;
-    }
-  }
-
-  const inlineMatch = html.match(/"playerResponse":\s*(\{.*?\})\s*,\s*"responseContext"/s);
-  if (inlineMatch) {
-    try {
-      return JSON.parse(inlineMatch[1]);
-    } catch (error) {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function isConsentInterstitialHtml(html) {
-  if (typeof html !== 'string' || !html) {
-    return false;
-  }
-
-  const lower = html.slice(0, 50000).toLowerCase();
-  if (!lower.includes('consent.youtube.com') && !lower.includes('consent.google.com')) {
-    return false;
-  }
-
-  if (lower.includes('before you continue to youtube')) {
-    return true;
-  }
-
-  if (/<form[^>]+action="https:\/\/consent\.youtube\.com\//i.test(html)) {
-    return true;
-  }
-
-  return false;
-}
-
-function extractJsonObjectFromAssignment(source, marker) {
-  if (typeof source !== 'string' || !marker) {
-    return null;
-  }
-
-  let searchIndex = 0;
-
-  while (searchIndex < source.length) {
-    const index = source.indexOf(marker, searchIndex);
-    if (index === -1) {
-      break;
-    }
-
-    let cursor = index + marker.length;
-
-    while (cursor < source.length) {
-      const current = source[cursor];
-
-      if (/\s/.test(current) || current === '=') {
-        cursor += 1;
-        continue;
-    }
-
-    if (current === '(' || current === '!' || current === ')') {
-      cursor += 1;
+  const events = Array.isArray(data.events) ? data.events : [];
+  const segments = [];
+  for (const event of events) {
+    if (!event || typeof event.tStartMs !== 'number') {
       continue;
     }
-
-      if (current === '{') {
-        const jsonText = extractBalancedJson(source, cursor);
-        if (jsonText) {
-          try {
-            return JSON.parse(jsonText);
-          } catch (error) {
-            // continue scanning for other payloads
-          }
-        }
-        cursor += 1;
-        continue;
-      }
-
-      if (current === '"' || current === '\'') {
-        const literal = extractJsStringLiteral(source, cursor);
-        if (!literal) {
-          cursor += 1;
-          continue;
-        }
-        const decoded = decodeJsStringLiteral(literal);
-        if (decoded !== null) {
-          try {
-            return JSON.parse(decoded);
-          } catch (error) {
-            // fall through and continue scanning after the literal
-          }
-        }
-        cursor += literal.length;
-        continue;
-      }
-
-      if (source.startsWith('JSON.parse', cursor)) {
-        const openParenIndex = source.indexOf('(', cursor);
-        if (openParenIndex === -1) {
-          cursor += 'JSON.parse'.length;
-          continue;
-        }
-
-        const argumentInfo = extractJsonParseArgument(source, openParenIndex + 1);
-        if (argumentInfo) {
-          cursor = argumentInfo.cursorAfter;
-          if (argumentInfo.payload !== null) {
-            try {
-              return JSON.parse(argumentInfo.payload);
-            } catch (error) {
-              // continue scanning for additional payloads
-            }
-          }
-          continue;
-        }
-
-        cursor = openParenIndex + 1;
-        continue;
-      }
-
-      if (/[A-Za-z0-9_$.[\]]/.test(current)) {
-        cursor = advancePastIdentifierChain(source, cursor);
-        continue;
-      }
-
-      if (current === '|' || current === '&' || current === '?' || current === ':' || current === '+' || current === '-') {
-        cursor += 1;
-        continue;
-      }
-
-      cursor += 1;
-    }
-
-    searchIndex = index + marker.length;
-  }
-
-  return null;
-}
-
-const JSON_STRING_WRAPPER_SET = new Set(['decodeURIComponent', 'decodeURI', 'unescape', 'atob']);
-
-function extractJsonParseArgument(source, startIndex) {
-  if (typeof source !== 'string' || startIndex >= source.length) {
-    return null;
-  }
-
-  let cursor = startIndex;
-  const wrappers = [];
-
-  while (cursor < source.length) {
-    while (cursor < source.length && /\s/.test(source[cursor])) {
-      cursor += 1;
-    }
-
-    if (cursor >= source.length) {
-      break;
-    }
-
-    const current = source[cursor];
-
-    if (current === '"' || current === '\'') {
-      const literal = extractJsStringLiteral(source, cursor);
-      if (!literal) {
-        return null;
-      }
-
-      cursor += literal.length;
-      const decoded = decodeJsStringLiteral(literal);
-      const payload = decoded === null ? null : applyJsonStringWrappers(decoded, wrappers);
-      const cursorAfter = skipTrailingParensAndWhitespace(source, cursor);
-
-      return {
-        payload,
-        cursorAfter
-      };
-    }
-
-    if (/[A-Za-z_$]/.test(current)) {
-      const identifierStart = cursor;
-      cursor = advancePastIdentifierChain(source, cursor);
-      const identifier = source.slice(identifierStart, cursor);
-
-      if (!JSON_STRING_WRAPPER_SET.has(identifier)) {
-        return null;
-      }
-
-      while (cursor < source.length && /\s/.test(source[cursor])) {
-        cursor += 1;
-      }
-
-      if (source[cursor] !== '(') {
-        return null;
-      }
-
-      cursor += 1;
-      wrappers.push(identifier);
+    const timestamp = formatMilliseconds(event.tStartMs);
+    const segs = Array.isArray(event.segs) ? event.segs : [];
+    const text = segs.map((seg) => (typeof seg.utf8 === 'string' ? seg.utf8 : '')).join(' ').trim();
+    if (!text) {
       continue;
     }
-
-    if (current === '(') {
-      cursor += 1;
-      continue;
-    }
-
-    if (current === ')') {
-      cursor += 1;
-      continue;
-    }
-
-    return null;
+    segments.push(`[${timestamp}] ${text}`);
   }
 
-  return null;
+  return segments.join('\n');
 }
 
-function skipTrailingParensAndWhitespace(source, startIndex) {
-  let cursor = startIndex;
-
-  while (cursor < source.length && /\s/.test(source[cursor])) {
-    cursor += 1;
-  }
-
-  while (cursor < source.length && source[cursor] === ')') {
-    cursor += 1;
-    while (cursor < source.length && /\s/.test(source[cursor])) {
-      cursor += 1;
-    }
-  }
-
-  return cursor;
-}
-
-function applyJsonStringWrappers(value, wrappers) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  if (!Array.isArray(wrappers) || wrappers.length === 0) {
-    return value;
-  }
-
-  let result = value;
-  for (let index = wrappers.length - 1; index >= 0; index -= 1) {
-    result = decodeJsonWrapper(wrappers[index], result);
-    if (result === null) {
-      return null;
-    }
-  }
-
-  return result;
-}
-
-function decodeJsonWrapper(wrapper, value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  try {
-    switch (wrapper) {
-      case 'decodeURIComponent':
-        return decodeURIComponent(value);
-      case 'decodeURI':
-        return decodeURI(value);
-      case 'unescape':
-        return decodeUsingUnescape(value);
-      case 'atob':
-        return decodeBase64(value);
-      default:
-        return null;
-    }
-  } catch (error) {
-    return null;
-  }
-}
-
-function decodeUsingUnescape(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  let result = value.replace(/%u([0-9A-Fa-f]{4})/g, (_, hex) => {
-    const codePoint = Number.parseInt(hex, 16);
-    if (!Number.isFinite(codePoint)) {
-      return '';
-    }
-    return String.fromCharCode(codePoint);
-  });
-
-  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => {
-    const codePoint = Number.parseInt(hex, 16);
-    if (!Number.isFinite(codePoint)) {
-      return '';
-    }
-    return String.fromCharCode(codePoint);
-  });
-
-  try {
-    return decodeURIComponent(result);
-  } catch (error) {
-    return result;
-  }
-}
-
-function decodeBase64(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  try {
-    if (typeof atob === 'function') {
-      return atob(value);
-    }
-  } catch (error) {
-    // fall through to Buffer handling
-  }
-
-  if (typeof Buffer !== 'undefined') {
-    try {
-      return Buffer.from(value, 'base64').toString('utf8');
-    } catch (error) {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function advancePastIdentifierChain(source, startIndex) {
-  let cursor = startIndex;
-  while (cursor < source.length) {
-    const character = source[cursor];
-    if (/[A-Za-z0-9_$]/.test(character)) {
-      cursor += 1;
-      continue;
-    }
-
-    if (character === '.') {
-      cursor += 1;
-      continue;
-    }
-
-    if (character === '[') {
-      cursor += 1;
-      while (cursor < source.length && /\s/.test(source[cursor])) {
-        cursor += 1;
-      }
-
-      if (cursor >= source.length) {
-        return cursor;
-      }
-
-      const bracketStart = source[cursor];
-      if (bracketStart === '"' || bracketStart === '\'') {
-        const literal = extractJsStringLiteral(source, cursor);
-        if (!literal) {
-          return cursor;
-        }
-        cursor += literal.length;
-        while (cursor < source.length && /\s/.test(source[cursor])) {
-          cursor += 1;
-        }
-        if (source[cursor] === ']') {
-          cursor += 1;
-          continue;
-        }
-        return cursor;
-      }
-
-      while (cursor < source.length && source[cursor] !== ']') {
-        cursor += 1;
-      }
-      if (source[cursor] === ']') {
-        cursor += 1;
-      }
-      continue;
-    }
-
-    if (character === ']') {
-      cursor += 1;
-      continue;
-    }
-
-    break;
-  }
-
-  return cursor;
-}
-
-function extractBalancedJson(source, startIndex) {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = startIndex; index < source.length; index += 1) {
-    const character = source[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (character === '\\') {
-      escaped = true;
-      continue;
-    }
-
-    if (character === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) {
-      continue;
-    }
-
-    if (character === '{') {
-      depth += 1;
-    } else if (character === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return source.slice(startIndex, index + 1);
-      }
-    }
-  }
-
-  return null;
-}
-
-function extractJsStringLiteral(source, startIndex) {
-  const quote = source[startIndex];
-  let cursor = startIndex + 1;
-  let escaped = false;
-
-  while (cursor < source.length) {
-    const character = source[cursor];
-    if (escaped) {
-      escaped = false;
-    } else if (character === '\\') {
-      escaped = true;
-    } else if (character === quote) {
-      return source.slice(startIndex, cursor + 1);
-    }
-    cursor += 1;
-  }
-
-  return null;
-}
-
-function decodeJsStringLiteral(literal) {
-  if (typeof literal !== 'string' || literal.length < 2) {
-    return null;
-  }
-
-  const quote = literal[0];
-  if ((quote !== '"' && quote !== '\'') || literal[literal.length - 1] !== quote) {
-    return null;
-  }
-
-  let result = '';
-  for (let index = 1; index < literal.length - 1; index += 1) {
-    const character = literal[index];
-    if (character === '\\') {
-      index += 1;
-      if (index >= literal.length - 1) {
-        break;
-      }
-
-      const next = literal[index];
-      switch (next) {
-        case 'n':
-          result += '\n';
-          break;
-        case 'r':
-          result += '\r';
-          break;
-        case 't':
-          result += '\t';
-          break;
-        case 'b':
-          result += '\b';
-          break;
-        case 'f':
-          result += '\f';
-          break;
-        case 'v':
-          result += '\v';
-          break;
-        case '0':
-          result += '\0';
-          break;
-        case '\\':
-          result += '\\';
-          break;
-        case '\'':
-          result += '\'';
-          break;
-        case '"':
-          result += '"';
-          break;
-        case 'x': {
-          const hex = literal.slice(index + 1, index + 3);
-          if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
-            result += String.fromCharCode(Number.parseInt(hex, 16));
-            index += 2;
-          } else {
-            result += next;
-          }
-          break;
-        }
-        case 'u': {
-          const hex = literal.slice(index + 1, index + 5);
-          if (/^[0-9A-Fa-f]{4}$/.test(hex)) {
-            result += String.fromCharCode(Number.parseInt(hex, 16));
-            index += 4;
-          } else {
-            result += next;
-          }
-          break;
-        }
-        default:
-          result += next;
-          break;
-      }
-    } else {
-      result += character;
-    }
-  }
-
-  return result;
-}
-
-function selectBestCaptionTrack(playerResponse) {
-  const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!Array.isArray(tracks) || tracks.length === 0) {
-    return null;
-  }
-
-  const viableTracks = tracks.filter((track) => track && typeof track.baseUrl === 'string' && track.baseUrl.trim().length > 0);
-  if (viableTracks.length === 0) {
-    return null;
-  }
-
-  const scored = viableTracks
-    .map((track, index) => ({ track, index, score: scoreCaptionTrack(track) }))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return a.index - b.index;
-    });
-
-  return scored[0]?.track ?? null;
-}
-
-function scoreCaptionTrack(track) {
-  if (!track || typeof track !== 'object') {
-    return Number.NEGATIVE_INFINITY;
-  }
-
-  let score = 0;
-  const languageCode = typeof track.languageCode === 'string' ? track.languageCode.toLowerCase() : '';
-  const vssId = typeof track.vssId === 'string' ? track.vssId.toLowerCase() : '';
-  const trackKind = typeof track.kind === 'string' ? track.kind.toLowerCase() : '';
-
-  if (languageCode === 'en') {
-    score += 30;
-  } else if (languageCode.startsWith('en')) {
-    score += 25;
-  } else if (languageCode) {
-    score += 10;
-  }
-
-  if (!trackKind) {
-    score += 5;
-  } else if (trackKind === 'asr') {
-    score -= 5;
-  }
-
-  if (vssId.startsWith('a.')) {
-    score -= 2;
-  }
-
-  const cleanedFallback = cleanGlaspTranscript(fallbackLines.join('\n'));
-  if (!cleanedFallback) {
-    throw new Error('Transcript data not found on Glasp for this video.');
-  }
-
-  return cleanedFallback;
-}
-
-function cleanGlaspTranscript(transcript) {
-  if (typeof transcript !== 'string') {
-    return '';
-  }
-
-  const normalized = transcript.replace(/\r/g, '\n');
-  const lines = normalized
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  if (lines.length === 0) {
-    return '';
-  }
-
-  const strippedLines = stripLeadingGlaspMetadataLines(lines);
-  const joined = strippedLines.join('\n').trim();
-  if (!joined) {
-    return '';
-  }
-
-  const cleaned = stripResidualGlaspControlsPrefix(joined);
-  return (cleaned || joined).trim();
-}
-
-function stripLeadingGlaspMetadataLines(lines) {
-  if (!Array.isArray(lines)) {
-    return [];
-  }
-
-  const cleaned = [];
-  let skipping = true;
-  let skipNext = false;
-  let removedAny = false;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    if (skipNext) {
-      skipNext = false;
-      removedAny = true;
-      continue;
-    }
-
-    const current = lines[index];
-    const trimmed = typeof current === 'string' ? current.trim() : '';
-
-    if (!trimmed) {
-      if (skipping) {
-        removedAny = true;
-        continue;
-      }
-      cleaned.push(trimmed);
-      continue;
-    }
-
-    if (!skipping) {
-      cleaned.push(trimmed);
-      continue;
-    }
-
-    const processed = stripGlaspMetadataPrefix(trimmed, removedAny);
-    if (processed.skipNextLine) {
-      skipNext = true;
-    }
-
-    if (processed.text) {
-      cleaned.push(processed.text);
-      skipping = false;
-    } else if (!processed.removed) {
-      cleaned.push(trimmed);
-      skipping = false;
-    }
-
-    if (processed.removed) {
-      removedAny = true;
-    }
-  }
-
-  return cleaned;
-}
-
-function stripGlaspMetadataPrefix(line, hasRemovedEarlier) {
-  if (typeof line !== 'string') {
-    return { text: '', removed: false, skipNextLine: false };
-  }
-
-  const monthNames = [
-    'january',
-    'february',
-    'march',
-    'april',
-    'may',
-    'june',
-    'july',
-    'august',
-    'september',
-    'october',
-    'november',
-    'december'
-  ];
-
-  const datePattern = new RegExp(
-    `^(?:${monthNames.join('|')})\\s+\\d{1,2},\\s*\\d{4}`,
-    'i'
-  );
-
-  const tokenPatterns = [
-    /^glasp\s*reader/i,
-    /^youtube\s*transcript\s*&\s*summary/i,
-    /^&\s*summary/i,
-    /^youtube\s*video\s*player/i,
-    /^transcripts?/i,
-    /^share\s*video/i,
-    /^download\s*\.?srt/i,
-    /^copy(?:\s*transcript)?/i,
-    /^summarize\s*transcript/i,
-    /^english\s*\(auto-generated\)/i,
-    /^share\s*this\s*page/i,
-    /^get\s*(?:youtube\s*)?video\s*transcript\s*&\s*summary/i,
-    /^get\s*transcript\s*&\s*summary/i
-  ];
-
-  let working = line.trimStart();
-  let removedAny = false;
-  let skipNextLine = false;
-
-  for (let iteration = 0; iteration < 50; iteration += 1) {
-    if (!working) {
-      break;
-    }
-
-    let matched = false;
-
-    const hashtagMatch = working.match(/^#[^\s#]+/);
-    if (hashtagMatch) {
-      working = working.slice(hashtagMatch[0].length).trimStart();
-      removedAny = true;
-      matched = true;
-    }
-
-    if (!matched) {
-      const dateMatch = working.match(datePattern);
-      if (dateMatch) {
-        working = working.slice(dateMatch[0].length).trimStart();
-        removedAny = true;
-        matched = true;
-      }
-    }
-
-    if (!matched) {
-      const numericDateMatch = working.match(/^\d{1,2},\s*\d{4}/);
-      if (numericDateMatch) {
-        working = working.slice(numericDateMatch[0].length).trimStart();
-        removedAny = true;
-        matched = true;
-      }
-    }
-
-    if (!matched) {
-      for (const pattern of tokenPatterns) {
-        const tokenMatch = working.match(pattern);
-        if (tokenMatch) {
-          working = working.slice(tokenMatch[0].length).trimStart();
-          removedAny = true;
-          matched = true;
-          break;
-        }
-      }
-    }
-
-    if (!matched) {
-      const fusedControlMatch = working.match(
-        /(?:share\s*video|download\s*\.?srt|copy(?:\s*transcript)?|summarize\s*transcript)/i
-      );
-      if (fusedControlMatch && fusedControlMatch.index !== undefined && fusedControlMatch.index < 200) {
-        const sliceIndex = fusedControlMatch.index + fusedControlMatch[0].length;
-        const remainder = working.slice(sliceIndex).trimStart();
-        if (remainder) {
-          working = remainder;
-          removedAny = true;
-          matched = true;
-        }
-      }
-    }
-
-    if (!matched) {
-      const byMatch = working.match(/^by(?:\b|\s+|(?=[A-Z#]))/i);
-      if (byMatch) {
-        if (!removedAny && !hasRemovedEarlier) {
-          // Avoid stripping genuine transcript lines that begin with "By" when no
-          // earlier metadata tokens have been removed from this or previous lines.
-          matched = false;
-        } else {
-          working = working.slice(byMatch[0].length);
-          working = working.trimStart();
-          removedAny = true;
-          matched = true;
-
-          const nameMatch = working.match(/^[A-Z][A-Za-z0-9'._-]*(?:\s+[A-Za-z0-9'._-]+)*/);
-          if (nameMatch) {
-            working = working.slice(nameMatch[0].length);
-          } else {
-            skipNextLine = true;
-          }
-
-          working = working.trimStart();
-        }
-      }
-    }
-
-    if (!matched && removedAny) {
-      const videoMatch = working.match(/^video/i);
-      if (videoMatch) {
-        const remainder = working.slice(videoMatch[0].length).trimStart();
-        if (/^download/i.test(remainder)) {
-          working = remainder;
-          matched = true;
-        }
-      }
-    }
-
-    if (!matched && /^s$/i.test(working)) {
-      working = '';
-      removedAny = true;
-      matched = true;
-    }
-
-    if (!matched && removedAny && working && (working[0] === 's' || working[0] === 'S')) {
-      working = working.slice(1).trimStart();
-      matched = true;
-    }
-
-    if (!matched) {
-      break;
-    }
-  }
-
-  return {
-    text: working.trimStart(),
-    removed: removedAny,
-    skipNextLine
-  };
-}
-
-function stripResidualGlaspControlsPrefix(text) {
-  if (typeof text !== 'string') {
-    return '';
-  }
-
-  let working = text.trimStart();
-  if (!working) {
-    return '';
-  }
-
-  const scanWindow = working.slice(0, 500);
-  const controlPattern = /(Share\s*Video|Download\s*\.?srt|Copy(?:\s*Transcript)?|Summarize\s*Transcript|English\s*\(auto-generated\))/gi;
-  let match;
-  let lastEnd = -1;
-
-  while ((match = controlPattern.exec(scanWindow)) !== null) {
-    lastEnd = match.index + match[0].length;
-  }
-
-  if (lastEnd >= 0) {
-    const remainder = working.slice(lastEnd).trimStart();
-    if (remainder) {
-      return remainder;
-    }
-  }
-
-  const residualMetadataPattern = /^(?:#[^\s#]+|Glasp\s*Reader|YouTube\s*Transcript|Transcripts?|English\s*\(auto-generated\)|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s*\d{4}|\d{1,2},\s*\d{4}|by\b)/i;
-  const metadataDetected = residualMetadataPattern.test(working);
-  const processed = stripGlaspMetadataPrefix(working, metadataDetected);
-  if (processed.removed && processed.text) {
-    return processed.text;
-  }
-
-  return working;
-}
-
-function buildTimedTextRequestUrl(baseUrl) {
-  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
-    return null;
-  }
-
-  try {
-    const url = new URL(baseUrl);
-    url.searchParams.set('fmt', 'json3');
-    return url.toString();
-  } catch (error) {
-    return null;
-  }
-}
-
-async function fetchTimedTextJson(requestUrl) {
-  if (typeof requestUrl !== 'string' || !requestUrl) {
-    return null;
-  }
-
-  const response = await fetch(requestUrl, { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(`Timed text request failed with status ${response.status}`);
-  }
-
-  const rawText = await response.text();
-  const sanitized = stripXssiPrefix(rawText).trim();
-  if (!sanitized) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(sanitized);
-  } catch (error) {
-    throw new Error('Unable to parse timed text response as JSON.');
-  }
-}
-
-function stripXssiPrefix(text) {
-  if (typeof text !== 'string') {
-    return '';
-  }
-  return text.replace(/^\)\]\}'\s*/u, '');
-}
-
-function parseTimedTextTrackListXml(xml) {
-  if (typeof xml !== 'string' || !xml.trim()) {
-    return [];
-  }
-
-  const decoded = xml.replace(/<!DOCTYPE[^>]*>/gi, '').replace(/<!--.*?-->/gs, '');
-  const trackRegex = /<track\s+([^>]+?)\s*\/?>(?:<\/track>)?/gi;
-  const attributeRegex = /([\w-]+)="([^"]*)"/g;
-  const tracks = [];
-
-  let trackMatch;
-  while ((trackMatch = trackRegex.exec(decoded)) !== null) {
-    const attrs = trackMatch[1];
-    const track = {};
-    let attributeMatch;
-    while ((attributeMatch = attributeRegex.exec(attrs)) !== null) {
-      const [, key, value] = attributeMatch;
-      track[key] = decodeHtmlEntity(value);
-    }
-
-    if (typeof track.lang_code === 'string' && track.lang_code.trim()) {
-      tracks.push(track);
-    }
-  }
-
-  return tracks;
-}
-
-function decodeHtmlEntity(value) {
-  return String(value)
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
-}
-
-function buildTimedTextRequestFromTrack(videoId, track) {
-  if (!videoId || !track || typeof track !== 'object') {
-    return null;
-  }
-
-  const langCode = typeof track.lang_code === 'string' ? track.lang_code.trim() : '';
-  if (!langCode) {
-    return null;
-  }
-
-  try {
-    const url = new URL('https://www.youtube.com/api/timedtext');
-    url.searchParams.set('v', videoId);
-    url.searchParams.set('fmt', 'json3');
-    url.searchParams.set('lang', langCode);
-
-    const name = typeof track.name === 'string' ? track.name.trim() : '';
-    if (name) {
-      url.searchParams.set('name', name);
-    }
-
-    const kind = typeof track.kind === 'string' ? track.kind.trim() : '';
-    if (kind) {
-      url.searchParams.set('kind', kind);
-    } else if (typeof track.vss_id === 'string' && track.vss_id.toLowerCase().startsWith('a.')) {
-      url.searchParams.set('kind', 'asr');
-    }
-
-    if (typeof track.vss_id === 'string' && track.vss_id.trim()) {
-      url.searchParams.set('vssids', track.vss_id.trim());
-    }
-
-async function ensureTranscriptHasTimestamps(transcript, videoUrl) {
-  const cleanedTranscript = cleanGlaspTranscript(transcript);
-  if (transcriptHasTimestamps(cleanedTranscript)) {
-    return cleanedTranscript;
-  }
-}
-
-function scoreTimedTextTrack(track) {
-  if (!track || typeof track !== 'object') {
-    return Number.NEGATIVE_INFINITY;
-  }
-
-  return cleanedTranscript;
-}
-
-  let score = 0;
-
-  if (langCode === 'en') {
-    score += 40;
-  } else if (langCode.startsWith('en')) {
-    score += 35;
-  } else if (langCode) {
-    score += 10;
-  }
-
-  if (kind === 'asr' || vssId.startsWith('a.')) {
-    score -= 5;
-  }
-
-  const watchUrlCandidates = buildWatchPageUrlCandidates(videoId);
-
-  try {
-    const transcriptFromWatchPage = await fetchTranscriptFromWatchPage(videoId, watchUrlCandidates);
-    if (transcriptFromWatchPage) {
-      return transcriptFromWatchPage;
-    }
-  } catch (error) {
-    console.debug('Failed to fetch transcript from watch page', error);
-  }
-
-  try {
-    const transcriptFromTrackList = await fetchTranscriptFromTimedTextTrackList(videoId);
-    if (transcriptFromTrackList) {
-      return transcriptFromTrackList;
-    }
-  } catch (error) {
-    console.debug('Failed to fetch transcript via timed text track list', error);
-  }
-
-  const paramVariants = ['lang=en&fmt=json3', 'lang=en&kind=asr&fmt=json3', 'lang=en-US&fmt=json3', 'lang=en-US&kind=asr&fmt=json3'];
-
-  if (name.includes('auto-generated')) {
-    score -= 1;
-  }
-
-  if (track.lang_default === 'true') {
-    score += 3;
-  }
-
-  return score;
-}
-
-async function fetchTranscriptFromWatchPage(videoId, watchUrlCandidates) {
-  const candidates = Array.isArray(watchUrlCandidates) && watchUrlCandidates.length > 0
-    ? watchUrlCandidates
-    : buildWatchPageUrlCandidates(videoId);
-
-  let lastError = null;
-  let playerResponse = null;
-
-  for (const watchUrl of candidates) {
-    if (!watchUrl) {
-      continue;
-    }
-
-    let response;
-    try {
-      response = await fetch(watchUrl, { credentials: 'include', redirect: 'follow' });
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Watch page request failed.');
-      continue;
-    }
-
-    if (!response.ok) {
-      lastError = new Error(`Watch page request failed with status ${response.status}`);
-      continue;
-    }
-
-    const html = await response.text();
-    if (isConsentInterstitialHtml(html)) {
-      lastError = new Error('Watch page request returned a consent interstitial.');
-      continue;
-    }
-
-    const parsed = extractPlayerResponseFromWatchHtml(html);
-    if (!parsed) {
-      lastError = new Error('Unable to locate player response in watch page HTML.');
-      continue;
-    }
-
-    playerResponse = parsed;
-    break;
-  }
-
-  if (!playerResponse) {
-    try {
-      playerResponse = await fetchPlayerResponseFromWatchTab(videoId, candidates);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to load watch page for transcript extraction.');
-    }
-  }
-
-  if (!playerResponse) {
-    throw lastError || new Error('Unable to locate player response in watch page HTML.');
-  }
-
-  const captionTrack = selectBestCaptionTrack(playerResponse);
-  if (!captionTrack || typeof captionTrack.baseUrl !== 'string') {
-    throw new Error('No caption track with a valid base URL was found in the player response.');
-  }
-
-  const requestUrl = buildTimedTextRequestUrl(captionTrack.baseUrl);
-  if (!requestUrl) {
-    throw new Error('Unable to normalize the caption track URL for transcript retrieval.');
-  }
-
-  const timedTextData = await fetchTimedTextJson(requestUrl);
-  if (!timedTextData) {
-    throw new Error('Timed text response from YouTube was empty.');
-  }
-
-  const formatted = parseTimedTextJson(timedTextData);
-  if (!formatted) {
-    throw new Error('Unable to format timed text transcript from YouTube watch page.');
-  }
-
-  return formatted;
-}
-
-function buildWatchPageUrlCandidates(videoId) {
-  const timestampParam = String(Math.max(1, Math.floor(Date.now() / 1000)));
-
-  return Array.from(
-    new Set(
-      [
-        buildWatchPageUrl(videoId),
-        buildWatchPageUrl(videoId, {
-          app: 'desktop',
-          persist_app: '1',
-          has_verified: '1',
-          hl: 'en',
-          gl: 'US',
-          persist_hl: '1',
-          persist_gl: '1',
-          bpctr: timestampParam
-        }),
-        buildWatchPageUrl(videoId, null, 'https://m.youtube.com/watch')
-      ].filter(Boolean)
-    )
-  );
-}
-
-async function fetchPlayerResponseFromWatchTab(videoId, candidates) {
-  const watchUrls = Array.isArray(candidates) && candidates.length > 0 ? candidates : buildWatchPageUrlCandidates(videoId);
-  let lastError = null;
-
-  for (const watchUrl of watchUrls) {
-    if (!watchUrl) {
-      continue;
-    }
-
-    let tab;
-    try {
-      tab = await chrome.tabs.create({ url: watchUrl, active: false });
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to open YouTube watch page.');
-      continue;
-    }
-
-    const tabId = tab?.id;
-    if (!tabId) {
-      lastError = new Error('Unable to open YouTube watch page.');
-      continue;
-    }
-
-    let closed = false;
-    const cleanup = async () => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      try {
-        await chrome.tabs.remove(tabId);
-      } catch (error) {
-        if (error && typeof error.message === 'string' && /No tab with id/.test(error.message)) {
-          return;
-        }
-        console.debug('Failed to close YouTube watch tab', error);
-      }
-    };
-
-    try {
-      await waitForTabComplete(tabId, WATCH_PAGE_LOAD_TIMEOUT_MS, 'YouTube watch page');
-      const evaluation = await evaluateWatchTabForPlayerResponse(tabId);
-      const parsed = parseWatchTabEvaluation(evaluation);
-      if (parsed) {
-        return parsed;
-      }
-      lastError = new Error('Watch tab did not expose a player response payload.');
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Unable to extract player response from watch tab.');
-    } finally {
-      await cleanup();
-    }
-  }
-
-  throw lastError || new Error('Unable to extract player response from watch tab.');
-}
-
-async function evaluateWatchTabForPlayerResponse(tabId) {
-  try {
-    const [executionResult] = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: 'MAIN',
-      func: () => {
-        const result = {
-          playerResponseJson: null,
-          playerResponseError: null,
-          html: null,
-          htmlError: null
-        };
-
-        try {
-          if (window?.ytInitialPlayerResponse && typeof window.ytInitialPlayerResponse === 'object') {
-            result.playerResponseJson = JSON.stringify(window.ytInitialPlayerResponse);
-          } else if (window?.ytplayer?.config?.args?.player_response) {
-            result.playerResponseJson = window.ytplayer.config.args.player_response;
-          }
-        } catch (error) {
-          result.playerResponseError = error && typeof error.message === 'string' ? error.message : String(error);
-        }
-
-        if (!result.playerResponseJson) {
-          try {
-            const doc = document?.documentElement;
-            result.html = doc ? doc.innerHTML : '';
-          } catch (error) {
-            result.htmlError = error && typeof error.message === 'string' ? error.message : String(error);
-          }
-        }
-
-        return result;
-      }
-    });
-
-    return executionResult?.result ?? null;
-  } catch (error) {
-    throw error instanceof Error ? error : new Error('Unable to evaluate watch page for player response.');
-  }
-}
-
-function parseWatchTabEvaluation(evaluation) {
-  if (!evaluation || typeof evaluation !== 'object') {
-    throw new Error('Watch tab did not return evaluation data.');
-  }
-
-  const { playerResponseJson, html, playerResponseError, htmlError } = evaluation;
-
-  if (typeof playerResponseJson === 'string' && playerResponseJson.trim()) {
-    try {
-      return JSON.parse(playerResponseJson);
-    } catch (error) {
-      if (typeof html === 'string' && html.trim()) {
-        const parsed = extractPlayerResponseFromWatchHtml(html);
-        if (parsed) {
-          return parsed;
-        }
-      }
-      throw new Error('Unable to parse player response JSON from watch tab.');
-    }
-  }
-
-  if (typeof html === 'string' && html.trim()) {
-    const parsed = extractPlayerResponseFromWatchHtml(html);
-    if (parsed) {
-      return parsed;
-    }
-    throw new Error('Player response not found in watch tab HTML.');
-  }
-
-  if (typeof playerResponseError === 'string' && playerResponseError) {
-    throw new Error(`Watch tab reported player response error: ${playerResponseError}`);
-  }
-
-  if (typeof htmlError === 'string' && htmlError) {
-    throw new Error(`Watch tab reported HTML extraction error: ${htmlError}`);
-  }
-
-  throw new Error('Watch tab did not expose player response data.');
-}
-
-async function fetchTranscriptFromTimedTextTrackList(videoId) {
-  if (!videoId) {
-    return '';
-  }
-
-  const listUrl = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&type=list`;
-
-  const response = await fetch(listUrl, { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(`Timed text track list request failed with status ${response.status}`);
-  }
-
-  const xml = await response.text();
-  const tracks = parseTimedTextTrackListXml(xml);
-  if (tracks.length === 0) {
-    throw new Error('Timed text track list did not contain any tracks.');
-  }
-
-  const scoredTracks = tracks
-    .map((track, index) => ({ track, index, score: scoreTimedTextTrack(track) }))
-    .filter((entry) => Number.isFinite(entry.score))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return a.index - b.index;
-    });
-
-  const bestTrack = scoredTracks[0]?.track;
-  if (!bestTrack) {
-    throw new Error('Unable to select a caption track from the timed text track list.');
-  }
-
-  const requestUrl = buildTimedTextRequestFromTrack(videoId, bestTrack);
-  if (!requestUrl) {
-    throw new Error('Unable to build a timed text request URL from the selected track.');
-  }
-
-  const timedTextData = await fetchTimedTextJson(requestUrl);
-  if (!timedTextData) {
-    throw new Error('Timed text JSON response from track list request was empty.');
-  }
-
-  const formatted = parseTimedTextJson(timedTextData);
-  if (!formatted) {
-    throw new Error('Unable to format timed text transcript from track list request.');
-  }
-
-  return formatted;
-}
-
-function buildWatchPageUrl(videoId, queryOverrides = null, baseUrl = 'https://www.youtube.com/watch') {
-  if (!videoId) {
-    return null;
-  }
-
-  try {
-    const url = new URL(baseUrl);
-    url.searchParams.set('v', videoId);
-
-    if (queryOverrides && typeof queryOverrides === 'object') {
-      for (const [key, value] of Object.entries(queryOverrides)) {
-        if (value === undefined || value === null) {
-          continue;
-        }
-        url.searchParams.set(key, String(value));
-      }
-    }
-
-    return url.toString();
-  } catch (error) {
-    return null;
-  }
-}
-
-function extractPlayerResponseFromWatchHtml(html) {
-  if (typeof html !== 'string' || !html) {
-    return null;
-  }
-
-  const assignmentMarkers = [
-    'ytInitialPlayerResponse =',
-    'var ytInitialPlayerResponse =',
-    'let ytInitialPlayerResponse =',
-    'const ytInitialPlayerResponse =',
-    'window["ytInitialPlayerResponse"] =',
-    'window.ytInitialPlayerResponse =',
-    'self.ytInitialPlayerResponse =',
-    'this.ytInitialPlayerResponse ='
-  ];
-  for (const marker of assignmentMarkers) {
-    const parsed = extractJsonObjectFromAssignment(html, marker);
-    if (parsed) {
-      return parsed;
-    }
-  }
-
-  const inlineMatch = html.match(/"playerResponse":\s*(\{.*?\})\s*,\s*"responseContext"/s);
-  if (inlineMatch) {
-    try {
-      return JSON.parse(inlineMatch[1]);
-    } catch (error) {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function isConsentInterstitialHtml(html) {
-  if (typeof html !== 'string' || !html) {
-    return false;
-  }
-
-  const lower = html.slice(0, 50000).toLowerCase();
-  if (!lower.includes('consent.youtube.com') && !lower.includes('consent.google.com')) {
-    return false;
-  }
-
-  if (lower.includes('before you continue to youtube')) {
-    return true;
-  }
-
-  if (/<form[^>]+action="https:\/\/consent\.youtube\.com\//i.test(html)) {
-    return true;
-  }
-
-  return false;
-}
-
-function extractJsonObjectFromAssignment(source, marker) {
-  if (typeof source !== 'string' || !marker) {
-    return null;
-  }
-
-  let searchIndex = 0;
-
-  while (searchIndex < source.length) {
-    const index = source.indexOf(marker, searchIndex);
-    if (index === -1) {
-      break;
-    }
-
-    let cursor = index + marker.length;
-
-    while (cursor < source.length) {
-      const current = source[cursor];
-
-      if (/\s/.test(current) || current === '=') {
-        cursor += 1;
-        continue;
-    }
-
-    if (current === '(' || current === '!' || current === ')') {
-      cursor += 1;
-      continue;
-    }
-
-      if (current === '{') {
-        const jsonText = extractBalancedJson(source, cursor);
-        if (jsonText) {
-          try {
-            return JSON.parse(jsonText);
-          } catch (error) {
-            // continue scanning for other payloads
-          }
-        }
-        cursor += 1;
-        continue;
-      }
-
-      if (current === '"' || current === '\'') {
-        const literal = extractJsStringLiteral(source, cursor);
-        if (!literal) {
-          cursor += 1;
-          continue;
-        }
-        const decoded = decodeJsStringLiteral(literal);
-        if (decoded !== null) {
-          try {
-            return JSON.parse(decoded);
-          } catch (error) {
-            // fall through and continue scanning after the literal
-          }
-        }
-        cursor += literal.length;
-        continue;
-      }
-
-      if (source.startsWith('JSON.parse', cursor)) {
-        const openParenIndex = source.indexOf('(', cursor);
-        if (openParenIndex === -1) {
-          cursor += 'JSON.parse'.length;
-          continue;
-        }
-
-        const argumentInfo = extractJsonParseArgument(source, openParenIndex + 1);
-        if (argumentInfo) {
-          cursor = argumentInfo.cursorAfter;
-          if (argumentInfo.payload !== null) {
-            try {
-              return JSON.parse(argumentInfo.payload);
-            } catch (error) {
-              // continue scanning for additional payloads
-            }
-          }
-          continue;
-        }
-
-        cursor = openParenIndex + 1;
-        continue;
-      }
-
-      if (/[A-Za-z0-9_$.[\]]/.test(current)) {
-        cursor = advancePastIdentifierChain(source, cursor);
-        continue;
-      }
-
-      if (current === '|' || current === '&' || current === '?' || current === ':' || current === '+' || current === '-') {
-        cursor += 1;
-        continue;
-      }
-
-      cursor += 1;
-    }
-
-    searchIndex = index + marker.length;
-  }
-
-  return null;
-}
-
-const JSON_STRING_WRAPPER_SET = new Set(['decodeURIComponent', 'decodeURI', 'unescape', 'atob']);
-
-function extractJsonParseArgument(source, startIndex) {
-  if (typeof source !== 'string' || startIndex >= source.length) {
-    return null;
-  }
-
-  let cursor = startIndex;
-  const wrappers = [];
-
-  while (cursor < source.length) {
-    while (cursor < source.length && /\s/.test(source[cursor])) {
-      cursor += 1;
-    }
-
-    if (cursor >= source.length) {
-      break;
-    }
-
-    const current = source[cursor];
-
-    if (current === '"' || current === '\'') {
-      const literal = extractJsStringLiteral(source, cursor);
-      if (!literal) {
-        return null;
-      }
-
-      cursor += literal.length;
-      const decoded = decodeJsStringLiteral(literal);
-      const payload = decoded === null ? null : applyJsonStringWrappers(decoded, wrappers);
-      const cursorAfter = skipTrailingParensAndWhitespace(source, cursor);
-
-      return {
-        payload,
-        cursorAfter
-      };
-    }
-
-    if (/[A-Za-z_$]/.test(current)) {
-      const identifierStart = cursor;
-      cursor = advancePastIdentifierChain(source, cursor);
-      const identifier = source.slice(identifierStart, cursor);
-
-      if (!JSON_STRING_WRAPPER_SET.has(identifier)) {
-        return null;
-      }
-
-      while (cursor < source.length && /\s/.test(source[cursor])) {
-        cursor += 1;
-      }
-
-      if (source[cursor] !== '(') {
-        return null;
-      }
-
-      cursor += 1;
-      wrappers.push(identifier);
-      continue;
-    }
-
-    if (current === '(') {
-      cursor += 1;
-      continue;
-    }
-
-    if (current === ')') {
-      cursor += 1;
-      continue;
-    }
-
-    return null;
-  }
-
-  return null;
-}
-
-function skipTrailingParensAndWhitespace(source, startIndex) {
-  let cursor = startIndex;
-
-  while (cursor < source.length && /\s/.test(source[cursor])) {
-    cursor += 1;
-  }
-
-  while (cursor < source.length && source[cursor] === ')') {
-    cursor += 1;
-    while (cursor < source.length && /\s/.test(source[cursor])) {
-      cursor += 1;
-    }
-  }
-
-  return cursor;
-}
-
-function applyJsonStringWrappers(value, wrappers) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  if (!Array.isArray(wrappers) || wrappers.length === 0) {
-    return value;
-  }
-
-  let result = value;
-  for (let index = wrappers.length - 1; index >= 0; index -= 1) {
-    result = decodeJsonWrapper(wrappers[index], result);
-    if (result === null) {
-      return null;
-    }
-  }
-
-  return result;
-}
-
-function decodeJsonWrapper(wrapper, value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  try {
-    switch (wrapper) {
-      case 'decodeURIComponent':
-        return decodeURIComponent(value);
-      case 'decodeURI':
-        return decodeURI(value);
-      case 'unescape':
-        return decodeUsingUnescape(value);
-      case 'atob':
-        return decodeBase64(value);
-      default:
-        return null;
-    }
-  } catch (error) {
-    return null;
-  }
-}
-
-function decodeUsingUnescape(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  let result = value.replace(/%u([0-9A-Fa-f]{4})/g, (_, hex) => {
-    const codePoint = Number.parseInt(hex, 16);
-    if (!Number.isFinite(codePoint)) {
-      return '';
-    }
-    return String.fromCharCode(codePoint);
-  });
-
-  result = result.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => {
-    const codePoint = Number.parseInt(hex, 16);
-    if (!Number.isFinite(codePoint)) {
-      return '';
-    }
-    return String.fromCharCode(codePoint);
-  });
-
-  try {
-    return decodeURIComponent(result);
-  } catch (error) {
-    return result;
-  }
-}
-
-function decodeBase64(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  try {
-    if (typeof atob === 'function') {
-      return atob(value);
-    }
-  } catch (error) {
-    // fall through to Buffer handling
-  }
-
-  if (typeof Buffer !== 'undefined') {
-    try {
-      return Buffer.from(value, 'base64').toString('utf8');
-    } catch (error) {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function advancePastIdentifierChain(source, startIndex) {
-  let cursor = startIndex;
-  while (cursor < source.length) {
-    const character = source[cursor];
-    if (/[A-Za-z0-9_$]/.test(character)) {
-      cursor += 1;
-      continue;
-    }
-
-    if (character === '.') {
-      cursor += 1;
-      continue;
-    }
-
-    if (character === '[') {
-      cursor += 1;
-      while (cursor < source.length && /\s/.test(source[cursor])) {
-        cursor += 1;
-      }
-
-      if (cursor >= source.length) {
-        return cursor;
-      }
-
-      const bracketStart = source[cursor];
-      if (bracketStart === '"' || bracketStart === '\'') {
-        const literal = extractJsStringLiteral(source, cursor);
-        if (!literal) {
-          return cursor;
-        }
-        cursor += literal.length;
-        while (cursor < source.length && /\s/.test(source[cursor])) {
-          cursor += 1;
-        }
-        if (source[cursor] === ']') {
-          cursor += 1;
-          continue;
-        }
-        return cursor;
-      }
-
-      while (cursor < source.length && source[cursor] !== ']') {
-        cursor += 1;
-      }
-      if (source[cursor] === ']') {
-        cursor += 1;
-      }
-      continue;
-    }
-
-    if (character === ']') {
-      cursor += 1;
-      continue;
-    }
-
-    break;
-  }
-
-  return cursor;
-}
-
-function extractBalancedJson(source, startIndex) {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = startIndex; index < source.length; index += 1) {
-    const character = source[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (character === '\\') {
-      escaped = true;
-      continue;
-    }
-
-    if (character === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) {
-      continue;
-    }
-
-    if (character === '{') {
-      depth += 1;
-    } else if (character === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return source.slice(startIndex, index + 1);
-      }
-    }
-  }
-
-  return null;
-}
-
-function extractJsStringLiteral(source, startIndex) {
-  const quote = source[startIndex];
-  let cursor = startIndex + 1;
-  let escaped = false;
-
-  while (cursor < source.length) {
-    const character = source[cursor];
-    if (escaped) {
-      escaped = false;
-    } else if (character === '\\') {
-      escaped = true;
-    } else if (character === quote) {
-      return source.slice(startIndex, cursor + 1);
-    }
-    cursor += 1;
-  }
-
-  return null;
-}
-
-function decodeJsStringLiteral(literal) {
-  if (typeof literal !== 'string' || literal.length < 2) {
-    return null;
-  }
-
-  const quote = literal[0];
-  if ((quote !== '"' && quote !== '\'') || literal[literal.length - 1] !== quote) {
-    return null;
-  }
-
-  let result = '';
-  for (let index = 1; index < literal.length - 1; index += 1) {
-    const character = literal[index];
-    if (character === '\\') {
-      index += 1;
-      if (index >= literal.length - 1) {
-        break;
-      }
-
-      const next = literal[index];
-      switch (next) {
-        case 'n':
-          result += '\n';
-          break;
-        case 'r':
-          result += '\r';
-          break;
-        case 't':
-          result += '\t';
-          break;
-        case 'b':
-          result += '\b';
-          break;
-        case 'f':
-          result += '\f';
-          break;
-        case 'v':
-          result += '\v';
-          break;
-        case '0':
-          result += '\0';
-          break;
-        case '\\':
-          result += '\\';
-          break;
-        case '\'':
-          result += '\'';
-          break;
-        case '"':
-          result += '"';
-          break;
-        case 'x': {
-          const hex = literal.slice(index + 1, index + 3);
-          if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
-            result += String.fromCharCode(Number.parseInt(hex, 16));
-            index += 2;
-          } else {
-            result += next;
-          }
-          break;
-        }
-        case 'u': {
-          const hex = literal.slice(index + 1, index + 5);
-          if (/^[0-9A-Fa-f]{4}$/.test(hex)) {
-            result += String.fromCharCode(Number.parseInt(hex, 16));
-            index += 4;
-          } else {
-            result += next;
-          }
-          break;
-        }
-        default:
-          result += next;
-          break;
-      }
-    } else {
-      result += character;
-    }
-  }
-
-  return result;
+function formatMilliseconds(ms) {
+  if (!Number.isFinite(ms) || ms < 0) {
+    return '00:00';
+  }
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 function selectBestCaptionTrack(playerResponse) {
@@ -5873,125 +2117,6 @@ function scoreCaptionTrack(track) {
   return score;
 }
 
-function buildTimedTextRequestUrl(baseUrl) {
-  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
-    return null;
-  }
-
-  try {
-    const url = new URL(baseUrl);
-    url.searchParams.set('fmt', 'json3');
-    return url.toString();
-  } catch (error) {
-    return null;
-  }
-}
-
-async function fetchTimedTextJson(requestUrl) {
-  if (typeof requestUrl !== 'string' || !requestUrl) {
-    return null;
-  }
-
-  const response = await fetch(requestUrl, { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(`Timed text request failed with status ${response.status}`);
-  }
-
-  const rawText = await response.text();
-  const sanitized = stripXssiPrefix(rawText).trim();
-  if (!sanitized) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(sanitized);
-  } catch (error) {
-    throw new Error('Unable to parse timed text response as JSON.');
-  }
-}
-
-function stripXssiPrefix(text) {
-  if (typeof text !== 'string') {
-    return '';
-  }
-  return text.replace(/^\)\]\}'\s*/u, '');
-}
-
-function parseTimedTextTrackListXml(xml) {
-  if (typeof xml !== 'string' || !xml.trim()) {
-    return [];
-  }
-
-  const decoded = xml.replace(/<!DOCTYPE[^>]*>/gi, '').replace(/<!--.*?-->/gs, '');
-  const trackRegex = /<track\s+([^>]+?)\s*\/?>(?:<\/track>)?/gi;
-  const attributeRegex = /([\w-]+)="([^"]*)"/g;
-  const tracks = [];
-
-  let trackMatch;
-  while ((trackMatch = trackRegex.exec(decoded)) !== null) {
-    const attrs = trackMatch[1];
-    const track = {};
-    let attributeMatch;
-    while ((attributeMatch = attributeRegex.exec(attrs)) !== null) {
-      const [, key, value] = attributeMatch;
-      track[key] = decodeHtmlEntity(value);
-    }
-
-    if (typeof track.lang_code === 'string' && track.lang_code.trim()) {
-      tracks.push(track);
-    }
-  }
-
-  return tracks;
-}
-
-function decodeHtmlEntity(value) {
-  return String(value)
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
-}
-
-function buildTimedTextRequestFromTrack(videoId, track) {
-  if (!videoId || !track || typeof track !== 'object') {
-    return null;
-  }
-
-  const langCode = typeof track.lang_code === 'string' ? track.lang_code.trim() : '';
-  if (!langCode) {
-    return null;
-  }
-
-  try {
-    const url = new URL('https://www.youtube.com/api/timedtext');
-    url.searchParams.set('v', videoId);
-    url.searchParams.set('fmt', 'json3');
-    url.searchParams.set('lang', langCode);
-
-    const name = typeof track.name === 'string' ? track.name.trim() : '';
-    if (name) {
-      url.searchParams.set('name', name);
-    }
-
-    const kind = typeof track.kind === 'string' ? track.kind.trim() : '';
-    if (kind) {
-      url.searchParams.set('kind', kind);
-    } else if (typeof track.vss_id === 'string' && track.vss_id.toLowerCase().startsWith('a.')) {
-      url.searchParams.set('kind', 'asr');
-    }
-
-    if (typeof track.vss_id === 'string' && track.vss_id.trim()) {
-      url.searchParams.set('vssids', track.vss_id.trim());
-    }
-
-    return url.toString();
-  } catch (error) {
-    return null;
-  }
-}
-
 function scoreTimedTextTrack(track) {
   if (!track || typeof track !== 'object') {
     return Number.NEGATIVE_INFINITY;
@@ -6012,850 +2137,49 @@ function scoreTimedTextTrack(track) {
     score += 10;
   }
 
-  if (kind === 'asr' || vssId.startsWith('a.')) {
-    score -= 5;
-  }
-
   if (typeof track.lang_original === 'string' && track.lang_original.toLowerCase().includes('english')) {
     score += 5;
+  }
+
+  if (track.lang_default === 'true' || track.lang_default === true) {
+    score += 3;
+  }
+
+  if (kind === 'asr') {
+    score -= 4;
+  }
+
+  if (vssId.startsWith('a.')) {
+    score -= 2;
   }
 
   if (name.includes('auto-generated')) {
     score -= 1;
   }
 
-  if (track.lang_default === 'true') {
-    score += 3;
-  }
-
   return score;
 }
 
-function extractVideoIdFromUrl(videoUrl) {
-  if (typeof videoUrl !== 'string') {
-    return null;
-  }
-
-  try {
-    const url = new URL(videoUrl);
-    if (url.hostname === 'youtu.be') {
-      return url.pathname.slice(1) || null;
-    }
-    if (url.searchParams.has('v')) {
-      return url.searchParams.get('v');
-    }
-    const shortsMatch = url.pathname.match(/\/shorts\/([\w-]{11})/);
-    if (shortsMatch) {
-      return shortsMatch[1];
-    }
-  } catch (error) {
-    return null;
-  }
-
-  const fallbackMatch = videoUrl.match(/(?:v=|\/)([\w-]{11})(?:[&?/]|$)/);
-  if (fallbackMatch) {
-    return fallbackMatch[1];
-  }
-
-  return null;
+function decodeHtmlEntity(value) {
+  return String(value)
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
 }
-
-function parseTimedTextJson(json) {
-  if (!json || !Array.isArray(json.events)) {
-    return '';
-  }
-
-  const segments = [];
-  for (const event of json.events) {
-    if (!event || !Array.isArray(event.segs) || event.segs.length === 0) {
-      continue;
-    }
-
-    const text = event.segs
-      .map((segment) => (typeof segment?.utf8 === 'string' ? segment.utf8 : ''))
-      .join('')
-      .replace(/\s+/g, ' ')
-      .replace(/\s*\n\s*/g, ' ')
-      .trim();
-
-    if (!text) {
-      continue;
-    }
-
-    const timestamp = formatMillisecondsToTimestamp(event.tStartMs ?? 0);
-    segments.push(`[${timestamp}] ${text}`);
-  }
-
-  return segments.join('\n');
-}
-
-function formatMillisecondsToTimestamp(ms) {
-  const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
-  const totalSeconds = Math.floor(safeMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const mm = String(minutes).padStart(2, '0');
-  const ss = String(seconds).padStart(2, '0');
-  if (hours > 0) {
-    return `${String(hours).padStart(2, '0')}:${mm}:${ss}`;
-  }
-  return `${mm}:${ss}`;
-}
-
-function formatTranscriptSegment(timestamp, text) {
-  const normalizedText = (text || '').replace(/\s+/g, ' ').trim();
-  const normalizedTimestamp = normalizeTimestamp(timestamp);
-  if (normalizedText) {
-    return `[${normalizedTimestamp}] ${normalizedText}`;
-  }
-  return `[${normalizedTimestamp}]`;
-}
-
-function normalizeTimestamp(raw) {
-  if (typeof raw !== 'string') {
-    return '00:00';
-  }
-  const cleaned = raw.replace(/[^0-9:]/g, '');
-  if (!cleaned) {
-    return '00:00';
-  }
-
-  const parts = cleaned.split(':').map((part) => Number.parseInt(part, 10)).filter((value) => !Number.isNaN(value));
-  if (parts.length === 0) {
-    return cleaned;
-  }
-
-  let totalSeconds = 0;
-  for (const part of parts) {
-    totalSeconds = totalSeconds * 60 + part;
-  }
-
-  if (!Number.isFinite(totalSeconds)) {
-    return cleaned;
-  }
-
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  const mm = String(minutes).padStart(2, '0');
-  const ss = String(seconds).padStart(2, '0');
-
-  if (hours > 0) {
-    return `${String(hours).padStart(2, '0')}:${mm}:${ss}`;
-  }
-  return `${mm}:${ss}`;
-}
-
-function isChatUrl(url) {
-  if (typeof url !== 'string') {
-    return false;
-  }
-  return url.startsWith('https://chatgpt.com');
-}
-
-function normalizeChatHost(host) {
-  if (typeof host === 'string') {
-    const normalized = host
-      .trim()
-      .toLowerCase()
-      .replace(/^https?:\/\//, '')
-      .replace(/\/.*/, '');
-    if (normalized === 'chatgpt.com') {
-      return 'chatgpt.com';
-    }
-  }
-  return 'chatgpt.com';
-}
-
-async function ensurePendingPromptsLoaded() {
-  if (pendingLoaded) {
-    return;
-  }
-  if (pendingLoadingPromise) {
-    await pendingLoadingPromise;
-    return;
-  }
-
-  pendingLoadingPromise = (async () => {
-    try {
-      const stored = await chrome.storage.session.get(PENDING_STORAGE_KEY);
-      const rawEntries = stored?.[PENDING_STORAGE_KEY];
-      if (rawEntries && typeof rawEntries === 'object') {
-        const restored = new Map();
-        for (const [key, value] of Object.entries(rawEntries)) {
-          const numericKey = Number.parseInt(key, 10);
-          if (Number.isNaN(numericKey)) {
-            continue;
-          }
-          if (value && typeof value.prompt === 'string') {
-            restored.set(numericKey, {
-              prompt: value.prompt,
-              attempts: Number.isFinite(value.attempts) ? value.attempts : 0,
-              host: typeof value.host === 'string' ? value.host : undefined,
-              autoSend: value.autoSend !== false,
-              hasInjected: value.hasInjected === true
-            });
-          }
-        }
-        pendingPrompts = restored;
-      } else {
-        pendingPrompts = new Map();
-      }
-    } finally {
-      pendingLoaded = true;
-      pendingLoadingPromise = null;
-    }
-  })();
-
-  await pendingLoadingPromise;
-}
-
-async function persistPendingPrompts() {
-  await ensurePendingPromptsLoaded();
-  if (pendingPrompts.size === 0) {
-    await chrome.storage.session.remove(PENDING_STORAGE_KEY);
-    return;
-  }
-
-  const serialized = {};
-  for (const [tabId, value] of pendingPrompts.entries()) {
-    serialized[String(tabId)] = {
-      prompt: value.prompt,
-      attempts: value.attempts ?? 0,
-      host: value.host,
-      autoSend: value.autoSend !== false,
-      hasInjected: value.hasInjected === true
-    };
-  }
-
-  await chrome.storage.session.set({ [PENDING_STORAGE_KEY]: serialized });
-}
-
-async function setPendingPrompt(tabId, data) {
-  await ensurePendingPromptsLoaded();
-  pendingPrompts.set(tabId, {
-    ...data,
-    attempts: data.attempts ?? 0,
-    autoSend: data.autoSend !== false,
-    hasInjected: data.hasInjected === true
-  });
-  await persistPendingPrompts();
-}
-
-async function removePendingPrompt(tabId) {
-  await ensurePendingPromptsLoaded();
-  if (!pendingPrompts.has(tabId)) {
-    return;
-  }
-  pendingPrompts.delete(tabId);
-  await persistPendingPrompts();
-}
-
-async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false) {
-  if (typeof prompt !== 'string' || !prompt.trim()) {
-    return { status: 'permanent-failure', reason: 'Invalid prompt provided.' };
-  }
-
-  const shouldAutoSend = autoSend !== false;
-  const normalizedPrompt = normalizeText(prompt);
-
-  const preferredSelectors = [
-    'textarea#prompt-textarea',
-    'textarea[data-id="root"]',
-    'textarea[data-id="prompt-textarea"]',
-    'textarea[placeholder*="Send a message"]',
-    '[contenteditable="true"]',
-    '[role="textbox"]'
-  ];
-
-  const composer = findEditor(preferredSelectors);
-  if (!composer) {
-    return { status: 'retry', reason: 'Composer not found yet.', hasInjected: hasInjected === true };
-  }
-
-  const composerText = getComposerText(composer);
-  const normalizedComposer = normalizeText(composerText);
-  const promptAlreadyApplied = normalizedComposer === normalizedPrompt && normalizedPrompt.length > 0;
-
-  if (hasInjected && !promptAlreadyApplied) {
-    const lastTurnMatches = lastUserMessageMatchesPrompt(normalizedPrompt);
-    const reason = !normalizedComposer
-      ? 'Composer cleared after injection.'
-      : lastTurnMatches
-        ? 'Prompt already present in conversation.'
-        : 'Composer content changed after injection.';
-    return { status: 'manual-complete', reason, hasInjected: true, mode: 'manual' };
-  }
-
-  let didInject = hasInjected === true || promptAlreadyApplied;
-
-  let composerReadyForSend = true;
-
-  if (!promptAlreadyApplied) {
-    if (!applyPromptToComposer(composer, prompt)) {
-      return { status: 'permanent-failure', reason: 'Unable to write prompt into composer.', hasInjected: hasInjected === true };
-    }
-    didInject = true;
-
-    if (shouldAutoSend) {
-      composerReadyForSend = await ensureComposerReflectsPrompt(composer, normalizedPrompt);
-    }
-  }
-
-  if (!shouldAutoSend) {
-    focusComposer(composer);
-    placeCaretAtEnd(composer);
-    return { status: 'success', mode: 'manual', hasInjected: didInject };
-  }
-
-  if (!composerReadyForSend) {
-    focusComposer(composer);
-    placeCaretAtEnd(composer);
-    return { status: 'manual-complete', reason: 'Composer did not stabilize before auto-send.', hasInjected: didInject, mode: 'manual' };
-  }
-
-  const sendSucceeded = await attemptAutoSend(composer, 5, 200);
-  if (sendSucceeded) {
-    return { status: 'success', hasInjected: didInject };
-  }
-
-  focusComposer(composer);
-  placeCaretAtEnd(composer);
-  return { status: 'retry', reason: 'Send button not ready.', hasInjected: didInject };
-
-  function findEditor(selectors) {
-    for (const selector of selectors) {
-      const element = deepQuerySelector(selector);
-      if (element && isEditable(element)) {
-        return element;
-      }
-    }
-
-    const matches = [];
-    traverse(document, (node) => {
-      if (node instanceof HTMLElement && isEditable(node)) {
-        matches.push(node);
-      }
-    });
-
-    if (matches.length === 0) {
-      return null;
-    }
-
-    matches.sort((a, b) => getElementScore(b) - getElementScore(a));
-    return matches[0];
-  }
-
-  function deepQuerySelector(selector) {
-    const queue = [document.documentElement];
-    const visited = new Set();
-
-    while (queue.length > 0) {
-      const node = queue.shift();
-      if (!node || visited.has(node)) {
-        continue;
-      }
-      visited.add(node);
-
-      if (node instanceof Element) {
-        const found = node.querySelector(selector);
-        if (found) {
-          return found;
-        }
-
-        if (node.shadowRoot) {
-          queue.push(node.shadowRoot);
-        }
-      }
-
-      if (node instanceof ShadowRoot || node instanceof DocumentFragment) {
-        queue.push(...node.children);
-      }
-    }
-
-    return null;
-  }
-
-  function traverse(root, visitor) {
-    const stack = [root];
-    const seen = new Set();
-
-    while (stack.length > 0) {
-      const node = stack.pop();
-      if (!node || seen.has(node)) {
-        continue;
-      }
-      seen.add(node);
-      visitor(node);
-
-      if (node instanceof Element) {
-        if (node.shadowRoot) {
-          stack.push(node.shadowRoot);
-        }
-        for (let i = node.children.length - 1; i >= 0; i -= 1) {
-          stack.push(node.children[i]);
-        }
-      } else if (node instanceof ShadowRoot || node instanceof DocumentFragment) {
-        for (let i = node.children.length - 1; i >= 0; i -= 1) {
-          stack.push(node.children[i]);
-        }
-      }
-    }
-  }
-
-  function isEditable(element) {
-    if (!(element instanceof HTMLElement)) {
-      return false;
-    }
-
-    if (element.tagName === 'TEXTAREA') {
-      return isVisible(element);
-    }
-
-    if (isContentEditableElement(element)) {
-      return isVisible(element);
-    }
-
-    return false;
-  }
-
-  function isVisible(element) {
-    const rect = element.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) {
-      return false;
-    }
-    const style = window.getComputedStyle(element);
-    return style.visibility !== 'hidden' && style.display !== 'none';
-  }
-
-  function getComposerText(element) {
-    if (!element) {
-      return '';
-    }
-    if ('value' in element && typeof element.value === 'string') {
-      return element.value;
-    }
-    if (isContentEditableElement(element)) {
-      return element.innerText || element.textContent || '';
-    }
-    return '';
-  }
-
-  function getElementScore(element) {
-    const rect = element.getBoundingClientRect();
-    return rect.width * rect.height;
-  }
-
-  function applyPromptToComposer(element, value) {
-    focusComposer(element);
-
-    if ('value' in element) {
-      setNativeValue(element, value);
-      dispatchInputEvents(element, value);
-      element.scrollTop = element.scrollHeight;
-      placeCaretAtEnd(element);
-      return true;
-    }
-
-    if (isContentEditableElement(element)) {
-      clearEditableContent(element);
-      const success = document.execCommand('insertText', false, value);
-      if (!success || element.innerText.trim() !== value.trim()) {
-        element.innerText = value;
-      }
-      dispatchInputEvents(element, value);
-      element.scrollTop = element.scrollHeight;
-      placeCaretAtEnd(element);
-      return true;
-    }
-
-    return false;
-  }
-
-  function focusComposer(element) {
-    if (!element || typeof element.focus !== 'function') {
-      return;
-    }
-    try {
-      element.focus({ preventScroll: false });
-    } catch (error) {
-      element.focus();
-    }
-  }
-
-  function placeCaretAtEnd(element) {
-    if (!element) {
-      return;
-    }
-
-    if (typeof element.selectionStart === 'number' && typeof element.selectionEnd === 'number') {
-      const length = element.value?.length ?? 0;
-      element.selectionStart = length;
-      element.selectionEnd = length;
-      return;
-    }
-
-    if (isContentEditableElement(element)) {
-      const selection = window.getSelection();
-      if (!selection) {
-        return;
-      }
-      selection.removeAllRanges();
-      const range = document.createRange();
-      range.selectNodeContents(element);
-      range.collapse(false);
-      selection.addRange(range);
-    }
-  }
-
-  function clearEditableContent(element) {
-    const selection = window.getSelection();
-    if (!selection) {
-      element.innerHTML = '';
-      return;
-    }
-
-    selection.removeAllRanges();
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    selection.addRange(range);
-    selection.deleteFromDocument();
-  }
-
-  function setNativeValue(element, value) {
-    const { set: valueSetter } = Object.getOwnPropertyDescriptor(element, 'value') || {};
-    const prototype =
-      element instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : element instanceof HTMLInputElement
-          ? HTMLInputElement.prototype
-          : HTMLElement.prototype;
-    const { set: prototypeSetter } = Object.getOwnPropertyDescriptor(prototype, 'value') || {};
-
-    if (prototypeSetter && valueSetter !== prototypeSetter) {
-      prototypeSetter.call(element, value);
-    } else if (valueSetter) {
-      valueSetter.call(element, value);
-    } else {
-      element.value = value;
-    }
-  }
-
-  function dispatchInputEvents(element, value) {
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    try {
-      element.dispatchEvent(
-        new InputEvent('input', {
-          bubbles: true,
-          data: value,
-          inputType: 'insertText'
-        })
-      );
-    } catch (error) {
-      // Ignore environments where InputEvent is not supported.
-    }
-  }
-
-  function sendMessage(element) {
-    const sendButton = findSendButton(element);
-    if (sendButton) {
-      if (!isSendButtonEnabled(sendButton)) {
-        return false;
-      }
-      sendButton.click();
-      clearComposer(element);
-      return true;
-    }
-
-    if (!simulateEnterKey(element)) {
-      return false;
-    }
-
-    clearComposer(element);
-    return true;
-  }
-
-  function simulateEnterKey(element) {
-    try {
-      focusComposer(element);
-      const keyDown = new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      });
-      const accepted = element.dispatchEvent(keyDown);
-      if (!accepted) {
-        return false;
-      }
-
-      const keyPress = new KeyboardEvent('keypress', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      });
-      element.dispatchEvent(keyPress);
-
-      const keyUp = new KeyboardEvent('keyup', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true
-      });
-      element.dispatchEvent(keyUp);
-      return true;
-    } catch (error) {
-      console.warn('Failed to simulate Enter key press', error);
-      return false;
-    }
-  }
-
-  function clearComposer(element) {
-    if (!element) {
-      return;
-    }
-
-    if ('value' in element) {
-      setNativeValue(element, '');
-      dispatchInputEvents(element, '');
-      return;
-    }
-
-    if (isContentEditableElement(element)) {
-      element.innerHTML = '';
-      dispatchInputEvents(element, '');
-      placeCaretAtEnd(element);
-    }
-  }
-
-  function findSendButton(contextElement) {
-    const candidates = [];
-    traverse(document, (node) => {
-      if (!(node instanceof HTMLElement)) {
-        return;
-      }
-
-      if (!isPotentialSendButton(node)) {
-        return;
-      }
-
-      const rect = node.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) {
-        return;
-      }
-
-      candidates.push({ node, distance: distanceTo(contextElement, node) });
-    });
-
-    if (candidates.length === 0) {
-      return null;
-    }
-
-    candidates.sort((a, b) => a.distance - b.distance);
-    return candidates[0].node;
-  }
-
-  function isSendButtonEnabled(button) {
-    if (!(button instanceof HTMLElement)) {
-      return false;
-    }
-
-    if (button.disabled) {
-      return false;
-    }
-
-    const ariaDisabled = button.getAttribute('aria-disabled');
-    if (ariaDisabled && ariaDisabled.toLowerCase() === 'true') {
-      return false;
-    }
-
-    const dataDisabled = button.getAttribute('data-disabled') || button.dataset?.disabled;
-    if (typeof dataDisabled === 'string' && dataDisabled.toLowerCase() === 'true') {
-      return false;
-    }
-
-    try {
-      const style = window.getComputedStyle(button);
-      if (style.pointerEvents === 'none') {
-        return false;
-      }
-      if (style.opacity && Number.parseFloat(style.opacity) < 0.2) {
-        return false;
-      }
-    } catch (error) {
-      // Ignore style lookup errors.
-    }
-
-    return true;
-  }
-
-  function isContentEditableElement(element) {
-    if (!(element instanceof HTMLElement)) {
-      return false;
-    }
-    if (element.isContentEditable) {
-      return true;
-    }
-    const contentEditable = element.getAttribute('contenteditable');
-    if (contentEditable && contentEditable.toLowerCase() === 'true') {
-      return true;
-    }
-    const role = element.getAttribute('role');
-    return Boolean(role && role.toLowerCase() === 'textbox');
-  }
-
-  function isPotentialSendButton(element) {
-    if (!(element instanceof HTMLElement)) {
-      return false;
-    }
-
-    const role = element.getAttribute('role');
-    if (element.tagName !== 'BUTTON' && role !== 'button') {
-      return false;
-    }
-
-    const labelSources = [
-      element.getAttribute('aria-label'),
-      element.getAttribute('title'),
-      element.dataset?.testid,
-      element.textContent
-    ];
-
-    const normalizedLabel = labelSources
-      .filter(Boolean)
-      .map((value) => value.trim().toLowerCase())
-      .find((value) => value.includes('send') || value.includes('submit') || value.includes('enter'));
-
-    if (normalizedLabel) {
-      return true;
-    }
-
-    const datasetTestId = element.dataset?.testid || element.getAttribute('data-testid');
-    if (datasetTestId && datasetTestId.toLowerCase().includes('send')) {
-      return true;
-    }
-
-    return false;
-  }
-
-  function distanceTo(from, to) {
-    try {
-      const rectA = from.getBoundingClientRect();
-      const rectB = to.getBoundingClientRect();
-      const dx = rectB.left - rectA.left;
-      const dy = rectB.top - rectA.top;
-      return Math.sqrt(dx * dx + dy * dy);
-    } catch (error) {
-      return Number.MAX_SAFE_INTEGER;
-    }
-  }
-
-  async function attemptAutoSend(element, attempts, delayMs) {
-    const maxAttempts = Math.max(1, attempts);
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      if (sendMessage(element)) {
-        return true;
-      }
-      if (attempt < maxAttempts - 1) {
-        await wait(delayMs);
-      }
-    }
-    return false;
-  }
-
-  async function ensureComposerReflectsPrompt(element, expectedValue) {
-    const normalizedExpected = normalizeText(expectedValue);
-    if (!normalizedExpected) {
-      return false;
-    }
-
-    let confirmed = false;
-    const maxChecks = 5;
-    for (let check = 0; check < maxChecks; check += 1) {
-      await wait(check === 0 ? 50 : 25);
-      if (!element || !element.isConnected) {
-        break;
-      }
-
-      const current = normalizeText(getComposerText(element));
-      if (current !== normalizedExpected) {
-        confirmed = false;
-        continue;
-      }
-
-      if (confirmed) {
-        return true;
-      }
-      confirmed = true;
-    }
-
-    return confirmed;
-  }
-
-  function wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
-  }
-
-  function normalizeText(value) {
-    if (typeof value !== 'string') {
-      return '';
-    }
-    return value.replace(/\s+/g, ' ').trim();
-  }
-
-  function lastUserMessageMatchesPrompt(normalizedTarget) {
-    if (!normalizedTarget) {
-      return false;
-    }
-
-    const selectors = [
-      '[data-message-author-role="user"]',
-      '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
-      '[data-testid^="conversation-turn-"] [data-message-author-role="user"]',
-      'article[data-testid^="conversation-turn-"][data-role="user"]'
-    ];
-
-    const collected = [];
-    const seen = new Set();
-    for (const selector of selectors) {
-      const matches = document.querySelectorAll(selector);
-      for (const node of matches) {
-        if (!(node instanceof HTMLElement) || seen.has(node)) {
-          continue;
-        }
-        seen.add(node);
-        collected.push(node);
-      }
-    }
-
-    for (let index = collected.length - 1; index >= 0; index -= 1) {
-      const node = collected[index];
-      if (!(node instanceof HTMLElement)) {
-        continue;
-      }
-      const text = node.innerText || node.textContent || '';
-      const normalizedText = normalizeText(text);
-      if (normalizedText) {
-        return normalizedText === normalizedTarget;
-      }
-    }
-    return false;
-  }
-}
-
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    parseTranscriptFromReaderText,
+    cleanGlaspTranscript,
+    stripLeadingGlaspMetadataLines,
+    stripResidualGlaspControlsPrefix,
     extractPlayerResponseFromWatchHtml,
     extractJsonObjectFromAssignment,
-    parseTranscriptFromReaderText,
-    stripLeadingGlaspMetadataLines
+    isConsentInterstitialHtml,
+    buildWatchPageUrl,
+    fetchTranscriptFromYouTube,
+    parseTimedTextTrackListXml,
+    buildTimedTextRequestFromTrack
   };
 }
