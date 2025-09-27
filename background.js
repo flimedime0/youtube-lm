@@ -860,12 +860,15 @@ function cleanGlaspTranscript(transcript) {
   if (lines.length === 0) {
     return '';
   }
+}
 
   const strippedLines = stripLeadingGlaspMetadataLines(lines);
   const joined = strippedLines.join('\n').trim();
   if (!joined) {
     return '';
   }
+  return 'chatgpt.com';
+}
 
   const cleaned = stripResidualGlaspControlsPrefix(joined);
   return (cleaned || joined).trim();
@@ -897,6 +900,7 @@ async function ensurePendingPromptsLoaded() {
   if (pendingLoaded) {
     return;
   }
+}
 
   if (pendingLoadingPromise) {
     return pendingLoadingPromise;
@@ -952,170 +956,613 @@ async function removePendingPrompt(tabId) {
   if (pendingPrompts.delete(tabId)) {
     await persistPendingPrompts();
   }
-}
-
-function injectPromptAndSend(prompt, autoSend, hasInjected) {
-  if (typeof prompt !== 'string' || !prompt.trim()) {
-    return { status: 'permanent-failure', reason: 'Invalid prompt.' };
-  }
-
-  const composer = findChatComposer();
-  if (!composer) {
-    return { status: 'retry', reason: 'Composer not yet available.' };
-  }
-
-  const applied = applyPromptToComposer(composer, prompt);
-  if (!applied) {
-    return { status: 'retry', reason: 'Failed to set prompt text.' };
-  }
-
-  if (!autoSend) {
-    return { status: 'manual-complete', hasInjected: true };
-  }
-
-  const sendButton = findSendButtonNearComposer(composer);
-  if (!sendButton) {
-    return { status: 'retry', reason: 'Send button not found.', hasInjected: true };
-  }
-
-  if (!isSendButtonEnabled(sendButton)) {
-    return { status: 'retry', reason: 'Send button disabled.', hasInjected: true };
-  }
-
-  sendButton.click();
-  return { status: 'success', hasInjected: true };
-}
-
-function findChatComposer() {
-  const selectors = [
-    'textarea[data-id="root"]',
-    'textarea[placeholder*="Send a message" i]',
-    '[data-testid="prompt-textarea"] textarea',
-    'form textarea',
-    'div[contenteditable="true"][data-message-author-role="user"]',
-    'div[contenteditable="true"][data-testid="textbox"]',
-    'div[contenteditable="true"]'
-  ];
-
-  for (const selector of selectors) {
-    const element = document.querySelector(selector);
-    if (element && isElementUsableComposer(element)) {
-      return element;
-    }
-  }
-  return null;
-}
-
-function isElementUsableComposer(element) {
-  if (!(element instanceof HTMLElement)) {
-    return false;
-  }
-
-  if (element.closest('[contenteditable="false"]')) {
-    return false;
-  }
-
-  const style = window.getComputedStyle(element);
-  if (style.display === 'none' || style.visibility === 'hidden') {
-    return false;
-  }
-
-  return true;
-}
-
-function applyPromptToComposer(element, prompt) {
-  try {
-    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
-      const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value');
-      const nativeSetter = descriptor?.set;
-      if (nativeSetter) {
-        nativeSetter.call(element, prompt);
-      } else {
-        element.value = prompt;
-      }
-
-      dispatchComposerInputEvents(element, prompt);
-      return true;
-    }
-
-    if (element.isContentEditable) {
-      element.textContent = prompt;
-      dispatchComposerInputEvents(element, prompt);
-      return true;
-    }
-  } catch (error) {
-    console.error('Failed to apply prompt to composer', error);
-  }
   return false;
 }
 
-function dispatchComposerInputEvents(element, prompt) {
-  const inputEvent = typeof InputEvent === 'function'
-    ? new InputEvent('input', { bubbles: true, data: prompt })
-    : new Event('input', { bubbles: true });
-  element.dispatchEvent(inputEvent);
-  element.dispatchEvent(new Event('change', { bubbles: true }));
-}
+async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false) {
+  if (typeof prompt !== 'string' || !prompt.trim()) {
+    return { status: 'permanent-failure', reason: 'Invalid prompt provided.' };
+  }
 
-function findSendButtonNearComposer(composer) {
-  const searchRoots = [
-    composer.closest('[data-testid^="conversation-turn-"]'),
-    composer.closest('form'),
-    composer.parentElement,
-    document
+  const shouldAutoSend = autoSend !== false;
+  const normalizedPrompt = normalizeText(prompt);
+
+  const preferredSelectors = [
+    'textarea#prompt-textarea',
+    'textarea[data-id="root"]',
+    'textarea[data-id="prompt-textarea"]',
+    'textarea[placeholder*="Send a message"]',
+    '[contenteditable="true"]',
+    '[role="textbox"]'
   ];
 
-  const selector = [
-    'button[data-testid="send-button"]',
-    'button[type="submit"]',
-    'button[aria-label*="Send" i]',
-    'button[data-testid*="send" i]'
-  ].join(', ');
+  const composer = findEditor(preferredSelectors);
+  if (!composer) {
+    return { status: 'retry', reason: 'Composer not found yet.', hasInjected: hasInjected === true };
+  }
 
-  for (const root of searchRoots) {
-    if (!root) {
-      continue;
+  const composerText = getComposerText(composer);
+  const normalizedComposer = normalizeText(composerText);
+  const promptAlreadyApplied = normalizedComposer === normalizedPrompt && normalizedPrompt.length > 0;
+
+  if (hasInjected && !promptAlreadyApplied) {
+    const lastTurnMatches = lastUserMessageMatchesPrompt(normalizedPrompt);
+    const reason = !normalizedComposer
+      ? 'Composer cleared after injection.'
+      : lastTurnMatches
+        ? 'Prompt already present in conversation.'
+        : 'Composer content changed after injection.';
+    return { status: 'manual-complete', reason, hasInjected: true, mode: 'manual' };
+  }
+
+  let didInject = hasInjected === true || promptAlreadyApplied;
+
+  let composerReadyForSend = true;
+
+  if (!promptAlreadyApplied) {
+    if (!applyPromptToComposer(composer, prompt)) {
+      return { status: 'permanent-failure', reason: 'Unable to write prompt into composer.', hasInjected: hasInjected === true };
     }
-    const button = root.querySelector(selector);
-    if (button) {
-      return button;
+    didInject = true;
+
+    if (shouldAutoSend) {
+      composerReadyForSend = await ensureComposerReflectsPrompt(composer, normalizedPrompt);
     }
   }
-  return null;
+
+  if (!shouldAutoSend) {
+    focusComposer(composer);
+    placeCaretAtEnd(composer);
+    return { status: 'success', mode: 'manual', hasInjected: didInject };
+  }
+
+  if (!composerReadyForSend) {
+    focusComposer(composer);
+    placeCaretAtEnd(composer);
+    return { status: 'manual-complete', reason: 'Composer did not stabilize before auto-send.', hasInjected: didInject, mode: 'manual' };
+  }
+
+  const sendSucceeded = await attemptAutoSend(composer, 5, 200);
+  if (sendSucceeded) {
+    return { status: 'success', hasInjected: didInject };
+  }
+  return /\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]/.test(transcript);
 }
 
-function isSendButtonEnabled(button) {
-  if (!(button instanceof HTMLElement)) {
-    return false;
-  }
+  focusComposer(composer);
+  placeCaretAtEnd(composer);
+  return { status: 'retry', reason: 'Send button not ready.', hasInjected: didInject };
 
-  if (button.disabled) {
-    return false;
-  }
-
-  const ariaDisabled = button.getAttribute('aria-disabled');
-  if (ariaDisabled && ariaDisabled.toLowerCase() === 'true') {
-    return false;
-  }
-
-  const dataDisabled = button.getAttribute('data-disabled') || button.dataset?.disabled;
-  if (typeof dataDisabled === 'string' && dataDisabled.toLowerCase() === 'true') {
-    return false;
-  }
-
-  try {
-    const style = window.getComputedStyle(button);
-    if (style.pointerEvents === 'none') {
-      return false;
-    }
-    if (style.opacity && Number.parseFloat(style.opacity) < 0.2) {
-      return false;
+  function findEditor(selectors) {
+    for (const selector of selectors) {
+      const element = deepQuerySelector(selector);
+      if (element && isEditable(element)) {
+        return element;
+      }
     }
   } catch (error) {
-    // Ignore style lookup errors.
+    console.warn('Timed transcript fallback failed', error);
   }
 
-  return true;
+    const matches = [];
+    traverse(document, (node) => {
+      if (node instanceof HTMLElement && isEditable(node)) {
+        matches.push(node);
+      }
+    });
+
+    if (matches.length === 0) {
+      return null;
+    }
+  } catch (error) {
+    console.debug('Failed to fetch transcript from watch page', error);
+  }
+
+    matches.sort((a, b) => getElementScore(b) - getElementScore(a));
+    return matches[0];
+  }
+
+  function deepQuerySelector(selector) {
+    const queue = [document.documentElement];
+    const visited = new Set();
+
+    while (queue.length > 0) {
+      const node = queue.shift();
+      if (!node || visited.has(node)) {
+        continue;
+      }
+      visited.add(node);
+
+      if (node instanceof Element) {
+        const found = node.querySelector(selector);
+        if (found) {
+          return found;
+        }
+
+        if (node.shadowRoot) {
+          queue.push(node.shadowRoot);
+        }
+      }
+
+      if (node instanceof ShadowRoot || node instanceof DocumentFragment) {
+        queue.push(...node.children);
+      }
+    }
+
+    return null;
+  }
+
+  function traverse(root, visitor) {
+    const stack = [root];
+    const seen = new Set();
+
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (!node || seen.has(node)) {
+        continue;
+      }
+      seen.add(node);
+      visitor(node);
+
+      if (node instanceof Element) {
+        if (node.shadowRoot) {
+          stack.push(node.shadowRoot);
+        }
+        for (let i = node.children.length - 1; i >= 0; i -= 1) {
+          stack.push(node.children[i]);
+        }
+      } else if (node instanceof ShadowRoot || node instanceof DocumentFragment) {
+        for (let i = node.children.length - 1; i >= 0; i -= 1) {
+          stack.push(node.children[i]);
+        }
+      }
+    }
+  }
+
+  function isEditable(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    if (element.tagName === 'TEXTAREA') {
+      return isVisible(element);
+    }
+
+    if (isContentEditableElement(element)) {
+      return isVisible(element);
+    }
+
+    return false;
+  }
+
+  function isVisible(element) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return false;
+    }
+    const style = window.getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  }
+
+  function getComposerText(element) {
+    if (!element) {
+      return '';
+    }
+    if ('value' in element && typeof element.value === 'string') {
+      return element.value;
+    }
+    if (isContentEditableElement(element)) {
+      return element.innerText || element.textContent || '';
+    }
+    return '';
+  }
+
+  function getElementScore(element) {
+    const rect = element.getBoundingClientRect();
+    return rect.width * rect.height;
+  }
+
+  function applyPromptToComposer(element, value) {
+    focusComposer(element);
+
+    if ('value' in element) {
+      setNativeValue(element, value);
+      dispatchInputEvents(element, value);
+      element.scrollTop = element.scrollHeight;
+      placeCaretAtEnd(element);
+      return true;
+    }
+
+    if (isContentEditableElement(element)) {
+      clearEditableContent(element);
+      const success = document.execCommand('insertText', false, value);
+      if (!success || element.innerText.trim() !== value.trim()) {
+        element.innerText = value;
+      }
+      dispatchInputEvents(element, value);
+      element.scrollTop = element.scrollHeight;
+      placeCaretAtEnd(element);
+      return true;
+    }
+
+    return false;
+  }
+
+  function focusComposer(element) {
+    if (!element || typeof element.focus !== 'function') {
+      return;
+    }
+    try {
+      element.focus({ preventScroll: false });
+    } catch (error) {
+      element.focus();
+    }
+  }
+
+  function placeCaretAtEnd(element) {
+    if (!element) {
+      return;
+    }
+
+    if (typeof element.selectionStart === 'number' && typeof element.selectionEnd === 'number') {
+      const length = element.value?.length ?? 0;
+      element.selectionStart = length;
+      element.selectionEnd = length;
+      return;
+    }
+
+    if (isContentEditableElement(element)) {
+      const selection = window.getSelection();
+      if (!selection) {
+        return;
+      }
+      selection.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.collapse(false);
+      selection.addRange(range);
+    }
+  }
+
+  function clearEditableContent(element) {
+    const selection = window.getSelection();
+    if (!selection) {
+      element.innerHTML = '';
+      return;
+    }
+
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.addRange(range);
+    selection.deleteFromDocument();
+  }
+
+  function setNativeValue(element, value) {
+    const { set: valueSetter } = Object.getOwnPropertyDescriptor(element, 'value') || {};
+    const prototype =
+      element instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : element instanceof HTMLInputElement
+          ? HTMLInputElement.prototype
+          : HTMLElement.prototype;
+    const { set: prototypeSetter } = Object.getOwnPropertyDescriptor(prototype, 'value') || {};
+
+    if (prototypeSetter && valueSetter !== prototypeSetter) {
+      prototypeSetter.call(element, value);
+    } else if (valueSetter) {
+      valueSetter.call(element, value);
+    } else {
+      element.value = value;
+    }
+  }
+
+  function dispatchInputEvents(element, value) {
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    try {
+      element.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: value,
+          inputType: 'insertText'
+        })
+      );
+    } catch (error) {
+      // Ignore environments where InputEvent is not supported.
+    }
+  }
+
+  function sendMessage(element) {
+    const sendButton = findSendButton(element);
+    if (sendButton) {
+      if (!isSendButtonEnabled(sendButton)) {
+        return false;
+      }
+      sendButton.click();
+      clearComposer(element);
+      return true;
+    }
+
+    if (!simulateEnterKey(element)) {
+      return false;
+    }
+
+    clearComposer(element);
+    return true;
+  }
+
+  function simulateEnterKey(element) {
+    try {
+      focusComposer(element);
+      const keyDown = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      });
+      const accepted = element.dispatchEvent(keyDown);
+      if (!accepted) {
+        return false;
+      }
+
+      const keyPress = new KeyboardEvent('keypress', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      });
+      element.dispatchEvent(keyPress);
+
+      const keyUp = new KeyboardEvent('keyup', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true
+      });
+      element.dispatchEvent(keyUp);
+      return true;
+    } catch (error) {
+      console.warn('Failed to simulate Enter key press', error);
+      return false;
+    }
+  }
+
+  function clearComposer(element) {
+    if (!element) {
+      return;
+    }
+
+    if ('value' in element) {
+      setNativeValue(element, '');
+      dispatchInputEvents(element, '');
+      return;
+    }
+
+    if (isContentEditableElement(element)) {
+      element.innerHTML = '';
+      dispatchInputEvents(element, '');
+      placeCaretAtEnd(element);
+    }
+  }
+
+  function findSendButton(contextElement) {
+    const candidates = [];
+    traverse(document, (node) => {
+      if (!(node instanceof HTMLElement)) {
+        return;
+      }
+
+      if (!isPotentialSendButton(node)) {
+        return;
+      }
+
+      const rect = node.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {
+        return;
+      }
+
+      candidates.push({ node, distance: distanceTo(contextElement, node) });
+    });
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    candidates.sort((a, b) => a.distance - b.distance);
+    return candidates[0].node;
+  }
+
+  function isSendButtonEnabled(button) {
+    if (!(button instanceof HTMLElement)) {
+      return false;
+    }
+
+    if (button.disabled) {
+      return false;
+    }
+
+    const ariaDisabled = button.getAttribute('aria-disabled');
+    if (ariaDisabled && ariaDisabled.toLowerCase() === 'true') {
+      return false;
+    }
+
+    const dataDisabled = button.getAttribute('data-disabled') || button.dataset?.disabled;
+    if (typeof dataDisabled === 'string' && dataDisabled.toLowerCase() === 'true') {
+      return false;
+    }
+
+    try {
+      const style = window.getComputedStyle(button);
+      if (style.pointerEvents === 'none') {
+        return false;
+      }
+      if (style.opacity && Number.parseFloat(style.opacity) < 0.2) {
+        return false;
+      }
+    } catch (error) {
+      // Ignore style lookup errors.
+    }
+
+    return true;
+  }
+
+  function isContentEditableElement(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+    if (element.isContentEditable) {
+      return true;
+    }
+    const contentEditable = element.getAttribute('contenteditable');
+    if (contentEditable && contentEditable.toLowerCase() === 'true') {
+      return true;
+    }
+    const role = element.getAttribute('role');
+    return Boolean(role && role.toLowerCase() === 'textbox');
+  }
+
+  function isPotentialSendButton(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    const role = element.getAttribute('role');
+    if (element.tagName !== 'BUTTON' && role !== 'button') {
+      return false;
+    }
+
+    const labelSources = [
+      element.getAttribute('aria-label'),
+      element.getAttribute('title'),
+      element.dataset?.testid,
+      element.textContent
+    ];
+
+    const normalizedLabel = labelSources
+      .filter(Boolean)
+      .map((value) => value.trim().toLowerCase())
+      .find((value) => value.includes('send') || value.includes('submit') || value.includes('enter'));
+
+    if (normalizedLabel) {
+      return true;
+    }
+
+    const datasetTestId = element.dataset?.testid || element.getAttribute('data-testid');
+    if (datasetTestId && datasetTestId.toLowerCase().includes('send')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function distanceTo(from, to) {
+    try {
+      const rectA = from.getBoundingClientRect();
+      const rectB = to.getBoundingClientRect();
+      const dx = rectB.left - rectA.left;
+      const dy = rectB.top - rectA.top;
+      return Math.sqrt(dx * dx + dy * dy);
+    } catch (error) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+  }
+
+  async function attemptAutoSend(element, attempts, delayMs) {
+    const maxAttempts = Math.max(1, attempts);
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (sendMessage(element)) {
+        return true;
+      }
+      if (attempt < maxAttempts - 1) {
+        await wait(delayMs);
+      }
+    }
+    return false;
+  }
+
+  async function ensureComposerReflectsPrompt(element, expectedValue) {
+    const normalizedExpected = normalizeText(expectedValue);
+    if (!normalizedExpected) {
+      return false;
+    }
+
+    let confirmed = false;
+    const maxChecks = 5;
+    for (let check = 0; check < maxChecks; check += 1) {
+      await wait(check === 0 ? 50 : 25);
+      if (!element || !element.isConnected) {
+        break;
+      }
+
+      const current = normalizeText(getComposerText(element));
+      if (current !== normalizedExpected) {
+        confirmed = false;
+        continue;
+      }
+
+      if (confirmed) {
+        return true;
+      }
+      confirmed = true;
+    }
+
+    return confirmed;
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
+  }
+
+  function normalizeText(value) {
+    if (typeof value !== 'string') {
+      return '';
+    }
+    return value.replace(/\s+/g, ' ').trim();
+  }
+
+  function lastUserMessageMatchesPrompt(normalizedTarget) {
+    if (!normalizedTarget) {
+      return false;
+    }
+
+    const selectors = [
+      '[data-message-author-role="user"]',
+      '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
+      '[data-testid^="conversation-turn-"] [data-message-author-role="user"]',
+      'article[data-testid^="conversation-turn-"][data-role="user"]'
+    ];
+
+    const collected = [];
+    const seen = new Set();
+    for (const selector of selectors) {
+      const matches = document.querySelectorAll(selector);
+      for (const node of matches) {
+        if (!(node instanceof HTMLElement) || seen.has(node)) {
+          continue;
+        }
+        seen.add(node);
+        collected.push(node);
+      }
+    }
+
+    for (let index = collected.length - 1; index >= 0; index -= 1) {
+      const node = collected[index];
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      const text = node.innerText || node.textContent || '';
+      const normalizedText = normalizeText(text);
+      if (normalizedText) {
+        return normalizedText === normalizedTarget;
+      }
+    }
+    return false;
+  }
 }
 function transcriptHasTimestamps(transcript) {
   if (typeof transcript !== 'string') {
@@ -1614,7 +2061,6 @@ function extractJsonObjectFromAssignment(source, marker) {
 
     searchIndex = index + marker.length;
   }
-
   return null;
 }
 
@@ -2024,6 +2470,7 @@ function buildTimedTextRequestFromTrack(videoId, track) {
     if (typeof track.vss_id === 'string' && track.vss_id.trim()) {
       url.searchParams.set('vssids', track.vss_id.trim());
     }
+    url.searchParams.set('lang', langCode);
 
     return url.toString();
   } catch (error) {
