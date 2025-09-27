@@ -860,12 +860,15 @@ function cleanGlaspTranscript(transcript) {
   if (lines.length === 0) {
     return '';
   }
+}
 
   const strippedLines = stripLeadingGlaspMetadataLines(lines);
   const joined = strippedLines.join('\n').trim();
   if (!joined) {
     return '';
   }
+  return 'chatgpt.com';
+}
 
   const cleaned = stripResidualGlaspControlsPrefix(joined);
   return (cleaned || joined).trim();
@@ -897,6 +900,7 @@ async function ensurePendingPromptsLoaded() {
   if (pendingLoaded) {
     return;
   }
+}
 
   if (pendingLoadingPromise) {
     return pendingLoadingPromise;
@@ -952,6 +956,7 @@ async function removePendingPrompt(tabId) {
   if (pendingPrompts.delete(tabId)) {
     await persistPendingPrompts();
   }
+  return false;
 }
 
 async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false) {
@@ -1021,6 +1026,8 @@ async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false)
   if (sendSucceeded) {
     return { status: 'success', hasInjected: didInject };
   }
+  return /\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]/.test(transcript);
+}
 
   focusComposer(composer);
   placeCaretAtEnd(composer);
@@ -1033,6 +1040,9 @@ async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false)
         return element;
       }
     }
+  } catch (error) {
+    console.warn('Timed transcript fallback failed', error);
+  }
 
     const matches = [];
     traverse(document, (node) => {
@@ -1044,6 +1054,9 @@ async function injectPromptAndSend(prompt, autoSend = true, hasInjected = false)
     if (matches.length === 0) {
       return null;
     }
+  } catch (error) {
+    console.debug('Failed to fetch transcript from watch page', error);
+  }
 
     matches.sort((a, b) => getElementScore(b) - getElementScore(a));
     return matches[0];
@@ -2048,7 +2061,6 @@ function extractJsonObjectFromAssignment(source, marker) {
 
     searchIndex = index + marker.length;
   }
-
   return null;
 }
 
@@ -2458,6 +2470,7 @@ function buildTimedTextRequestFromTrack(videoId, track) {
     if (typeof track.vss_id === 'string' && track.vss_id.trim()) {
       url.searchParams.set('vssids', track.vss_id.trim());
     }
+    url.searchParams.set('lang', langCode);
 
     return url.toString();
   } catch (error) {
