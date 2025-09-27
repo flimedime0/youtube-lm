@@ -989,30 +989,58 @@ function injectPromptAndSend(prompt, autoSend, hasInjected) {
 function findChatComposer() {
   const selectors = [
     'textarea[data-id="root"]',
-    'textarea',
+    'textarea[placeholder*="Send a message" i]',
+    '[data-testid="prompt-textarea"] textarea',
+    'form textarea',
+    'div[contenteditable="true"][data-message-author-role="user"]',
+    'div[contenteditable="true"][data-testid="textbox"]',
     'div[contenteditable="true"]'
   ];
+
   for (const selector of selectors) {
     const element = document.querySelector(selector);
-    if (element) {
+    if (element && isElementUsableComposer(element)) {
       return element;
     }
   }
   return null;
 }
 
+function isElementUsableComposer(element) {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (element.closest('[contenteditable="false"]')) {
+    return false;
+  }
+
+  const style = window.getComputedStyle(element);
+  if (style.display === 'none' || style.visibility === 'hidden') {
+    return false;
+  }
+
+  return true;
+}
+
 function applyPromptToComposer(element, prompt) {
   try {
-    if (element.value !== undefined) {
-      element.value = prompt;
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value');
+      const nativeSetter = descriptor?.set;
+      if (nativeSetter) {
+        nativeSetter.call(element, prompt);
+      } else {
+        element.value = prompt;
+      }
+
+      dispatchComposerInputEvents(element, prompt);
       return true;
     }
 
     if (element.isContentEditable) {
-      element.innerText = prompt;
-      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.textContent = prompt;
+      dispatchComposerInputEvents(element, prompt);
       return true;
     }
   } catch (error) {
@@ -1021,16 +1049,39 @@ function applyPromptToComposer(element, prompt) {
   return false;
 }
 
+function dispatchComposerInputEvents(element, prompt) {
+  const inputEvent = typeof InputEvent === 'function'
+    ? new InputEvent('input', { bubbles: true, data: prompt })
+    : new Event('input', { bubbles: true });
+  element.dispatchEvent(inputEvent);
+  element.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 function findSendButtonNearComposer(composer) {
-  const root = composer.closest('[data-testid^="conversation-turn-"]') || composer.parentElement;
-  if (root) {
-    const button = root.querySelector('button[type="submit"], button[aria-label*="Send" i], button[data-testid*="send" i]');
+  const searchRoots = [
+    composer.closest('[data-testid^="conversation-turn-"]'),
+    composer.closest('form'),
+    composer.parentElement,
+    document
+  ];
+
+  const selector = [
+    'button[data-testid="send-button"]',
+    'button[type="submit"]',
+    'button[aria-label*="Send" i]',
+    'button[data-testid*="send" i]'
+  ].join(', ');
+
+  for (const root of searchRoots) {
+    if (!root) {
+      continue;
+    }
+    const button = root.querySelector(selector);
     if (button) {
       return button;
     }
   }
-  const fallback = document.querySelector('button[type="submit"], button[aria-label*="Send" i], button[data-testid*="send" i]');
-  return fallback || null;
+  return null;
 }
 
 function isSendButtonEnabled(button) {
